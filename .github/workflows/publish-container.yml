@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  IMAGE: ghcr.io/rossvideo/st2138-tester-dev
+  IMAGE: ghcr.io/rossvideo/st2138-tester
 
 jobs:
   publish:
@@ -90,7 +90,7 @@ jobs:
         shell: bash
         run: |
           versions_json="$(gh api --paginate --slurp \
-            "/orgs/rossvideo/packages/container/st2138-tester-dev/versions?per_page=100" \
+            "/orgs/rossvideo/packages/container/st2138-tester/versions?per_page=100" \
             | jq 'add')"
           stale_ids="$(jq -r '
             [
@@ -116,7 +116,7 @@ jobs:
           while IFS= read -r version_id; do
             echo "Deleting stale dev-only GHCR version $version_id"
             gh api --method DELETE \
-              "/orgs/rossvideo/packages/container/st2138-tester-dev/versions/$version_id"
+              "/orgs/rossvideo/packages/container/st2138-tester/versions/$version_id"
           done <<< "$stale_ids"
 
   increment-version:
