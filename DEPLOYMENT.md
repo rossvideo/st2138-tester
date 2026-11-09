@@ -27,11 +27,12 @@ if the image should be public.
 
 ## Security automation
 
-CodeQL and the root npm dependency audit run on every push, with CodeQL also
-running for pull requests to `dev` and `main`. Dependabot checks npm, Dockerfile,
+CodeQL, the root npm dependency audit, and the unit tests/build workflow run only
+for pull requests targeting `dev` and `main`, not on branch pushes or a schedule.
+Dependabot checks npm, Dockerfile,
 and GitHub Actions dependencies daily and targets update PRs at `dev`. GitHub
 Dependabot updates are schedule-based; `npm audit` provides the dependency check
-on each push.
+on each pull request to `dev` or `main`.
 
 ### Architecture-specific images
 
