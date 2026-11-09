@@ -24,7 +24,7 @@ jobs:
       packages: write
     steps:
       - name: Check out target branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.ref_name }}
           submodules: recursive
@@ -127,7 +127,7 @@ jobs:
       contents: write
     steps:
       - name: Check out main
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: main
 
