@@ -86,9 +86,10 @@ npm test
 npm run build
 ```
 
-CodeQL analysis and `npm audit` run on every push. Dependabot checks npm,
-Dockerfile, and GitHub Actions dependencies daily and opens update PRs against
-`dev`; Dependabot's update service is scheduled, not triggered by each push.
+Unit tests, the build, CodeQL analysis, and `npm audit` run on every branch push
+and on PRs targeting `dev` or `main`. Dependabot checks npm, Dockerfile, and
+GitHub Actions dependencies daily and opens update PRs against `dev`;
+Dependabot's update service is scheduled, not triggered by each push.
 
 To build and run the local Docker image instead:
 
