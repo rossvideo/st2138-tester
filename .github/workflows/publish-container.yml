@@ -1,0 +1,156 @@
+name: Publish container
+
+on:
+  push:
+    branches:
+      - dev
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-${{ github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/rossvideo/st2138-tester-dev
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out target branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Resolve image tags
+        id: tags
+        shell: bash
+        env:
+          BASE_BRANCH: ${{ github.ref_name }}
+          MERGE_SHA: ${{ github.sha }}
+        run: |
+          short_sha="${MERGE_SHA:0:7}"
+          if [[ "$BASE_BRANCH" == "dev" ]]; then
+            date_tag="$(date -u +%Y%m%d)"
+            {
+              echo "tags<<EOF"
+              echo "$IMAGE:dev-latest"
+              echo "$IMAGE:dev-$date_tag"
+              echo "$IMAGE:dev-$date_tag-$short_sha"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          else
+            version="$(tr -d '[:space:]' < version.md)"
+            if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+              echo "Invalid version.md value: $version" >&2
+              exit 1
+            fi
+            {
+              echo "version=$version" >> "$GITHUB_OUTPUT"
+              echo "tags<<EOF" >> "$GITHUB_OUTPUT"
+              echo "$IMAGE:latest" >> "$GITHUB_OUTPUT"
+              echo "$IMAGE:$version" >> "$GITHUB_OUTPUT"
+              echo "EOF" >> "$GITHUB_OUTPUT"
+            }
+          fi
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push multi-architecture image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+
+      - name: Keep the three newest dev image versions
+        if: github.ref == 'refs/heads/dev'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          versions_json="$(gh api --paginate --slurp \
+            "/orgs/rossvideo/packages/container/st2138-tester-dev/versions?per_page=100" \
+            | jq 'add')"
+          stale_ids="$(jq -r '
+            [
+              .[]
+              | (.metadata.container.tags // []) as $tags
+              | select(any($tags[]; startswith("dev-") and . != "dev-latest"))
+              | select(all($tags[]; startswith("dev-")))
+              | {id, created_at, tags: $tags}
+            ]
+            | sort_by(.created_at)
+            | reverse
+            | .[3:]
+            | .[]
+            | select(all(.tags[]; . != "dev-latest"))
+            | .id
+          ' <<< "$versions_json")"
+
+          if [[ -z "$stale_ids" ]]; then
+            echo "No old dev image versions to delete."
+            exit 0
+          fi
+
+          while IFS= read -r version_id; do
+            echo "Deleting stale dev-only GHCR version $version_id"
+            gh api --method DELETE \
+              "/orgs/rossvideo/packages/container/st2138-tester-dev/versions/$version_id"
+          done <<< "$stale_ids"
+
+  increment-version:
+    if: github.ref == 'refs/heads/main'
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Increment patch version
+        id: bump
+        shell: bash
+        run: |
+          version="$(tr -d '[:space:]' < version.md)"
+          if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Invalid version.md value: $version" >&2
+            exit 1
+          fi
+          IFS=. read -r major minor patch <<< "$version"
+          next_version="$major.$minor.$((patch + 1))"
+          printf '%s\n' "$next_version" > version.md
+          echo "version=$next_version" >> "$GITHUB_OUTPUT"
+
+      - name: Commit version bump
+        env:
+          NEXT_VERSION: ${{ steps.bump.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add version.md
+          git commit -m "chore: bump version to $NEXT_VERSION"
+          git push origin HEAD:main

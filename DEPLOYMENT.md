@@ -13,6 +13,26 @@ docker compose up -d --build
 Use Node 24 LTS. The build copies the UI into `dist/ui`. Rebuild after source
 changes. There are no development bind mounts in production.
 
+## GitHub image publishing
+
+Updates to `dev` publish `ghcr.io/rossvideo/st2138-tester-dev` for `linux/amd64`
+and `linux/arm64`, move the `dev-latest` tag, and publish `dev-YYYYMMDD` and
+`dev-YYYYMMDD-SHA` tags. The workflow retains only the three newest dev image
+versions and does not delete `main` tags. Updates to `main` publish the same
+multi-architecture image as `latest` and the version in [version.md](version.md),
+then increment the patch version in a bot commit. The GitHub Actions workflow
+needs permission to write packages and push the version bump to `main`; branch
+protection must allow that bot push. Set the GHCR package visibility separately
+if the image should be public.
+
+## Security automation
+
+CodeQL and the root npm dependency audit run on every push, with CodeQL also
+running for pull requests to `dev` and `main`. Dependabot checks npm, Dockerfile,
+and GitHub Actions dependencies daily and targets update PRs at `dev`. GitHub
+Dependabot updates are schedule-based; `npm audit` provides the dependency check
+on each push.
+
 ### Architecture-specific images
 
 The Dockerfile supports Linux x86-64 (`linux/amd64`) and aarch64
