@@ -1,10 +1,11 @@
 import express from 'express';
+import { rateLimit } from 'express-rate-limit';
 import path from 'path';
 import { createScanRoutes } from './routes/scan';
 import { initializeOpenApiSpec } from './openapi/openapi-spec';
 import { createLocalAccess } from './security/local-access';
 
-const app = express();
+export const app = express();
 const PORT = process.env.PORT || 3000;
 const access = createLocalAccess();
 app.disable('x-powered-by');
@@ -17,6 +18,13 @@ app.use((req, res, next) => {
 });
 
 // Middleware
+app.use(rateLimit({
+  windowMs: 60 * 1000,
+  limit: 10000,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { message: 'Too many requests. Please try again later.' }
+}));
 app.use('/api/v2', (req, res, next) => {
   res.setHeader('Cache-Control', 'no-store');
   next();
@@ -43,11 +51,13 @@ app.use((err: any, req: express.Request, res: express.Response, next: express.Ne
   res.status(500).json({ error: 'Internal server error' });
 });
 
-initializeOpenApiSpec().then(() => {
-  const server = app.listen(PORT, () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+if (require.main === module) {
+  initializeOpenApiSpec().then(() => {
+    const server = app.listen(PORT, () => {
+      console.log(`Server running on http://localhost:${PORT}`);
+    });
+    server.requestTimeout = 15000;
+    server.headersTimeout = 10000;
+    server.keepAliveTimeout = 5000;
   });
-  server.requestTimeout = 15000;
-  server.headersTimeout = 10000;
-  server.keepAliveTimeout = 5000;
-});
+}

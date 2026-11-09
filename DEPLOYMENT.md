@@ -89,8 +89,8 @@ checks temporarily change values; if a worker is interrupted, verify device
 state manually.
 
 The image may be published to a public container registry. That does not make the
-web service safe for public access: it has no sign-in, CAPTCHA, or application-level
-rate limit, and it makes outbound requests to user-supplied device URLs. Before
+web service safe for public access: it has no sign-in or CAPTCHA, and it makes
+outbound requests to user-supplied device URLs. Before
 public service exposure, provide ingress authentication and access controls and
 restrict outbound destinations; see [Security Review](SECURITY-REVIEW.md). Ingress
 authentication alone does not constrain outbound requests. Keep the default
@@ -117,8 +117,22 @@ devices. It does not change the tester website's TLS or other workers' settings.
 
 ## Resource boundaries
 
+All HTTP routes share a limit of 10,000 requests per minute per client IP
+(IPv6 clients are grouped by /56 subnet). This includes UI files, health checks,
+and every API endpoint. Excess requests receive HTTP 429 with a JSON message,
+`Retry-After`, and standard `RateLimit` headers before body parsing or device work.
+Active scans are not interrupted by the limiter.
+
+Counters are held in memory per application process and reset on restart.
+Express does not trust forwarded client-IP headers by default: clients behind a
+reverse proxy share that proxy's limit. Configure proxy trust only for known
+ingress infrastructure before relying on forwarded client addresses. Multiple
+application instances need a shared rate-limit store or an ingress-level limit.
+This request-rate limit does not bound concurrent operations or their resource use.
+
 | Scope | Limit |
 | --- | --- |
+| Incoming HTTP requests | 10,000 per minute per client IP, shared across all routes |
 | Application-level device work caps | None configured for request payload size, worker count, slots, model size, response/stream size, or report size |
 | Operation timeouts | REST requests and gRPC calls each have a 1-minute timeout; an operation stops only after 5 minutes with no progress (no total time limit) |
 | Scan progress | REST/gRPC scans stream NDJSON progress, with a heartbeat every 5 s that keeps proxy connections active |
