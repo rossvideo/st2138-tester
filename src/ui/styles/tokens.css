@@ -1,0 +1,18 @@
+:root {
+  color-scheme: light;
+  --paper: #f3f5ee;
+  --white: #ffffff;
+  --ink: #202724;
+  --muted: #68736d;
+  --line: #d7ded6;
+  --line-strong: #aebbb1;
+  --forest: #164b3d;
+  --forest-dark: #103c32;
+  --coral: #e95a43;
+  --lime: #d9f06b;
+  --mint: #e1f2e8;
+  --rose: #f8e6e0;
+  --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --sans: "Avenir Next", "Segoe UI", sans-serif;
+  --serif: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+}

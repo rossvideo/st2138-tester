@@ -1,0 +1,4 @@
+[submodule "vendor/st2138-a"]
+	path = vendor/st2138-a
+	url = https://github.com/SMPTE/st2138-a.git
+	branch = develop

@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#f3f5ee">
+  <title>Test Your Catena</title>
+  <link rel="stylesheet" href="/styles/tokens.css">
+  <link rel="stylesheet" href="/styles/layout.css">
+  <link rel="stylesheet" href="/styles/components.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Test Your Catena home">
+        <img class="brand-logo" src="/imgs/RRL_logo_light.png" alt="Ross Video">
+        <span class="brand-name">ROSS Video's Test Your Catena</span>
+      </a>
+      <div id="connectionSummary" class="connection-summary" hidden>
+        <span id="connectionLed" class="connection-led" role="img" aria-label="Connected"></span>
+        <span id="connectedHost" class="connection-host"></span>
+        <span id="connectedProtocol" class="protocol-tag"></span>
+        <button id="changeDeviceButton" class="quiet-button" type="button">Change device</button>
+      </div>
+      <nav class="topbar-links" aria-label="Project links">
+        <a href="https://github.com/SMPTE/st2138-a/tree/main/docs" target="_blank" rel="noreferrer">Docs</a>
+        <a href="https://github.com/SMPTE/st2138-a" target="_blank" rel="noreferrer">ST 2138-a</a>
+      </nav>
+    </header>
+
+    <main>
+      <section id="connectView" class="connect-view">
+        <div class="connect-copy">
+          <p class="eyebrow"><span class="eyebrow-rule"></span> DEVICE CONFORMANCE</p>
+          <h1>Test the<br><em>whole device.</em></h1>
+          <p class="connect-deck">Connect to a Catena endpoint and inspect every populated slot against the ST 2138 validator.</p>
+          <div class="connect-stamp" aria-hidden="true">
+            <span>REST</span><span class="stamp-cross">+</span><span>gRPC</span>
+            <span class="stamp-sub">ONE DEVICE AT A TIME</span>
+          </div>
+        </div>
+
+        <div class="connect-form-wrap">
+          <form id="connectionForm" novalidate>
+            <div class="form-heading">
+              <p class="eyebrow">NEW TEST SESSION</p>
+              <h2>Connect a device</h2>
+            </div>
+
+            <label class="field-label" for="deviceUrl">Device base URL</label>
+            <div class="url-field">
+              <span class="url-prefix" aria-hidden="true">↗</span>
+              <input id="deviceUrl" name="deviceUrl" type="text" inputmode="url" autocomplete="url"
+                placeholder="https://device.example.com" required>
+            </div>
+
+            <div class="connection-options">
+              <label class="jwt-toggle" for="useJwt">
+                <input id="useJwt" type="checkbox" aria-controls="jwtField">
+                <span>Use JWT</span>
+              </label>
+              <label class="jwt-toggle" for="allowInsecureTls">
+                <input id="allowInsecureTls" type="checkbox" aria-controls="insecureTlsWarning" aria-describedby="insecureTlsWarning">
+                <span>Allow insecure TLS</span>
+              </label>
+            </div>
+            <p id="insecureTlsWarning" class="tls-warning" role="status" hidden>
+              Warning: HTTPS certificate verification is disabled for this device's REST/gRPC scans and
+              follow-up operations. An impersonated device could receive your JWT and commands.
+              Use only trusted test devices. TLS encryption remains enabled.
+            </p>
+            <div id="jwtField" class="jwt-field" hidden>
+              <label class="field-label" for="jwtToken">JWT token</label>
+              <textarea id="jwtToken" rows="4" placeholder="Paste your JWT token"
+                autocomplete="off" autocapitalize="off" spellcheck="false" disabled></textarea>
+            </div>
+
+            <fieldset class="protocol-fieldset">
+              <legend class="field-label">Protocol</legend>
+              <div class="protocol-switch">
+                <label><input type="radio" name="protocol" value="rest" checked><span>REST</span></label>
+                <label><input type="radio" name="protocol" value="grpc"><span>gRPC</span></label>
+              </div>
+            </fieldset>
+
+            <button id="scanButton" class="primary-button" type="submit">
+              <span>Start scan</span><span aria-hidden="true">↗</span>
+            </button>
+            <p id="connectionStatus" class="connection-status" role="status" aria-live="polite"></p>
+          </form>
+        </div>
+
+      </section>
+
+      <section id="workspace" class="workspace" hidden>
+        <div class="workspace-heading">
+          <div>
+            <p class="eyebrow"><span class="eyebrow-rule"></span> TEST YOUR CATENA</p>
+            <h1 id="reportTitle">Device Report</h1>
+            <p class="scan-target"><span id="reportEndpoint"></span></p>
+            <p id="scanTime" class="scan-timestamp"></p>
+          </div>
+          <button id="rescanButton" class="outline-button" type="button">Run scan again <span aria-hidden="true">↻</span></button>
+        </div>
+
+        <section class="overview-strip" aria-label="Scan overview">
+          <div class="overview-item"><span class="overview-label">SLOTS SCANNED</span><strong id="totalCount">0</strong></div>
+          <div class="overview-item"><span class="overview-label">PARAMETER CHECKS</span><strong id="apiCheckCount">0</strong></div>
+          <div class="overview-item overview-tests"><span class="overview-label">ALL TESTS</span><strong><span id="allTestsPassedPercent">—</span> pass</strong><small id="allTestsFailedPercent" class="overview-test-breakdown">— fail · 0 passed / 0 failed</small></div>
+          <div class="overview-item overview-pass"><span class="overview-label">SLOTS PASSED</span><strong id="passedCount">0</strong></div>
+          <div class="overview-item overview-fail"><span class="overview-label">SLOTS FAILED</span><strong id="failedCount">0</strong></div>
+        </section>
+
+        <section class="endpoint-overview" aria-label="Endpoint summary">
+          <div class="device-endpoint-summary">
+            <span class="overview-label">DEVICE-WIDE ENDPOINTS</span>
+            <strong id="deviceEndpointSummary">0 passed · 0 failed</strong>
+          </div>
+          <div class="slot-endpoint-heading">
+            <span class="overview-label">SLOT SUMMARY</span>
+            <div class="slot-summary-columns" aria-hidden="true"><span>SLOT</span><span>PRODUCT</span><span>VERSION</span><span>SERIAL NUMBER</span><span>SCHEMA</span><span>PASSED</span><span>FAILED</span></div>
+          </div>
+          <div id="slotEndpointSummary" class="slot-endpoint-summary"></div>
+        </section>
+
+        <nav class="report-tabs" role="tablist" aria-label="Report views">
+          <button class="report-tab is-active" type="button" role="tab" aria-selected="true" data-panel="summaryPanel">Summary</button>
+          <button class="report-tab" type="button" role="tab" aria-selected="false" data-panel="endpointsPanel">API checks</button>
+          <button class="report-tab" type="button" role="tab" aria-selected="false" data-panel="commandsPanel">Commands</button>
+          <button class="report-tab" type="button" role="tab" aria-selected="false" data-panel="modelsPanel">Device models</button>
+        </nav>
+
+        <section id="summaryPanel" class="report-panel" role="tabpanel">
+          <div class="report-section-heading">
+            <div><p class="eyebrow">VALIDATION</p><h2>Slot results</h2></div>
+            <span id="scanOutcome" class="outcome-tag"></span>
+          </div>
+          <div id="slotResults" class="slot-results"></div>
+        </section>
+
+        <section id="endpointsPanel" class="report-panel" role="tabpanel" hidden>
+          <div class="report-section-heading">
+            <div><p class="eyebrow">OPENAPI</p><h2>Endpoint checks</h2></div>
+            <span id="endpointAuditSummary" class="outcome-tag"></span>
+          </div>
+          <div id="endpointAudit" class="endpoint-audit"></div>
+        </section>
+
+        <section id="commandsPanel" class="report-panel" role="tabpanel" hidden>
+          <div class="report-section-heading">
+            <div><p class="eyebrow">MANUAL EXECUTION</p><h2>Commands</h2></div>
+          </div>
+          <div id="commandGroups" class="command-groups"></div>
+        </section>
+
+        <section id="modelsPanel" class="report-panel" role="tabpanel" hidden>
+          <div class="report-section-heading">
+            <div><p class="eyebrow">FULL RESPONSES</p><h2>Device models</h2></div>
+          </div>
+          <div id="deviceModels" class="device-models"></div>
+        </section>
+      </section>
+    </main>
+
+    <footer class="app-footer"><span>TEST YOUR CATENA</span><span>ST 2138 CONFORMANCE WORKSPACE</span></footer>
+  </div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

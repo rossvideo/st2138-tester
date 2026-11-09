@@ -1,0 +1,23 @@
+node_modules
+npm-debug.log
+dist
+.git
+.gitignore
+TODO.md
+DONE.md
+.DS_Store
+*.log
+# Keep the vendored submodule source, but drop its VCS/build cruft
+**/.git
+vendor/**/node_modules
+vendor/st2138-a/tools/data
+vendor/st2138-a/coverage
+vendor/st2138-a/docs
+vendor/st2138-a/examples
+old-src
+test_exes
+reports
+.env
+.env.*
+scripts/blackduck-scan.sh
+scripts/blackduck-report
