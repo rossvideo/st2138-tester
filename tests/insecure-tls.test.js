@@ -31,6 +31,7 @@ test('invalid device certificates fail by default and work only with explicit op
   context.after(() => rpcServer.forceShutdown());
   async function ping() {
     const transport = grpcTransport(`127.0.0.1:${port}`, true);
+    transport.options['grpc.ssl_target_name_override'] = 'localhost';
     const client = new grpc.Client(transport.target, transport.credentials, transport.options);
     try {
       return await new Promise((resolve, reject) => client.makeUnaryRequest('/test/Ping', identity, identity,
