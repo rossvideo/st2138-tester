@@ -15,7 +15,7 @@ changes. There are no development bind mounts in production.
 
 ## GitHub image publishing
 
-Updates to `dev` publish `ghcr.io/rossvideo/st2138-tester-dev` for `linux/amd64`
+Updates to `dev` publish `ghcr.io/rossvideo/st2138-tester` for `linux/amd64`
 and `linux/arm64`, move the `dev-latest` tag, and publish `dev-YYYYMMDD` and
 `dev-YYYYMMDD-SHA` tags. The workflow retains only the three newest dev image
 versions and does not delete `main` tags. Updates to `main` publish the same

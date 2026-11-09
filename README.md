@@ -5,7 +5,7 @@ Test and validate SMPTE ST 2138 Catena devices over REST or native gRPC.
 
 ## 1. Use a GHCR container
 
-The multi-architecture image is `ghcr.io/rossvideo/st2138-tester-dev`. It supports
+The multi-architecture image is `ghcr.io/rossvideo/st2138-tester`. It supports
 `linux/amd64` (x86-64) and `linux/arm64` (aarch64); Docker selects the host
 architecture automatically.
 
@@ -22,8 +22,8 @@ build. Only the three newest dev image versions are retained. Use `latest` for
 the most recent `main` image:
 
 ```sh
-docker pull ghcr.io/rossvideo/st2138-tester-dev:dev-latest
-docker run --rm -p 127.0.0.1:3000:3000 ghcr.io/rossvideo/st2138-tester-dev:dev-latest
+docker pull ghcr.io/rossvideo/st2138-tester:dev-latest
+docker run --rm -p 127.0.0.1:3000:3000 ghcr.io/rossvideo/st2138-tester:dev-latest
 ```
 
 Open http://localhost:3000. Press `Ctrl+C` to stop the container. If the GHCR
@@ -86,9 +86,10 @@ npm test
 npm run build
 ```
 
-CodeQL analysis and `npm audit` run on every push. Dependabot checks npm,
-Dockerfile, and GitHub Actions dependencies daily and opens update PRs against
-`dev`; Dependabot's update service is scheduled, not triggered by each push.
+Unit tests, the build, CodeQL analysis, and `npm audit` run on every branch push
+and on PRs targeting `dev` or `main`. Dependabot checks npm, Dockerfile, and
+GitHub Actions dependencies daily and opens update PRs against `dev`;
+Dependabot's update service is scheduled, not triggered by each push.
 
 To build and run the local Docker image instead:
 

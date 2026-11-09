@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  IMAGE: ghcr.io/rossvideo/st2138-tester-dev
+  IMAGE: ghcr.io/rossvideo/st2138-tester
 
 jobs:
   publish:
@@ -24,7 +24,7 @@ jobs:
       packages: write
     steps:
       - name: Check out target branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.ref_name }}
           submodules: recursive
@@ -69,14 +69,14 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push multi-architecture image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -90,7 +90,7 @@ jobs:
         shell: bash
         run: |
           versions_json="$(gh api --paginate --slurp \
-            "/orgs/rossvideo/packages/container/st2138-tester-dev/versions?per_page=100" \
+            "/orgs/rossvideo/packages/container/st2138-tester/versions?per_page=100" \
             | jq 'add')"
           stale_ids="$(jq -r '
             [
@@ -116,7 +116,7 @@ jobs:
           while IFS= read -r version_id; do
             echo "Deleting stale dev-only GHCR version $version_id"
             gh api --method DELETE \
-              "/orgs/rossvideo/packages/container/st2138-tester-dev/versions/$version_id"
+              "/orgs/rossvideo/packages/container/st2138-tester/versions/$version_id"
           done <<< "$stale_ids"
 
   increment-version:
@@ -127,7 +127,7 @@ jobs:
       contents: write
     steps:
       - name: Check out main
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: main
 

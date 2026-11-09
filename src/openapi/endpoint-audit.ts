@@ -542,7 +542,7 @@ export async function runEndpointAudit(
         readOnly: ctx.memberReadOnly,
         oid: ctx.fqoid,
         operation: endpoint.method === 'GET' ? 'READ' : endpoint.method === 'PUT' ? 'UPDATE' : endpoint.method,
-        title: `${endpoint.method === 'GET' ? 'Read' : endpoint.method === 'PUT' ? 'Update' : endpoint.method} ${endpoint.operationId || endpoint.pathTemplate.split('/').filter(Boolean).at(-1) || 'member'} endpoint`
+        title: `${endpoint.method === 'GET' ? 'Read' : endpoint.method === 'PUT' ? 'Update' : endpoint.method} ${endpoint.operationId || endpoint.pathTemplate.split('/').filter(Boolean).slice(-1)[0] || 'member'} endpoint`
       } : {})
     };
 

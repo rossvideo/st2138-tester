@@ -1,7 +1,7 @@
 # Multi-stage build for Test-Your-Catena
 
 # Compile portable JavaScript and run tests natively, even when cross-building.
-FROM --platform=$BUILDPLATFORM node:24-alpine AS builder
+FROM --platform=$BUILDPLATFORM node:26-alpine AS builder
 
 WORKDIR /app
 
@@ -22,7 +22,7 @@ COPY vendor ./vendor
 RUN npm test && npm run build
 
 # Runtime stage
-FROM node:24-alpine
+FROM node:26-alpine
 
 WORKDIR /app
 
