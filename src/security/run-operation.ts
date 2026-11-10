@@ -40,11 +40,10 @@ export async function runOperation(req: Request, res: Response,
     if (res.destroyed) return;
     const extension = path.extname(__filename);
     worker = fork(path.join(__dirname, `operation-worker${extension}`), [], {
-      execArgv: extension === '.ts' ? ['--require', 'ts-node/register'] : [],
+      execArgv: extension === '.ts' ? ['--import', 'tsx'] : [],
       stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
       env: { PATH: process.env.PATH, NODE_ENV: process.env.NODE_ENV,
-        ST2138_SUBMODULE_ROOT: process.env.ST2138_SUBMODULE_ROOT,
-        ...(extension === '.ts' ? { TS_NODE_TRANSPILE_ONLY: 'true' } : {}) }
+        ST2138_SUBMODULE_ROOT: process.env.ST2138_SUBMODULE_ROOT }
     });
     if (streamsProgress) {
       heartbeat = setInterval(() => {
