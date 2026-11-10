@@ -30,6 +30,16 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
+      - name: Check version matches ST 2138-a
+        shell: bash
+        run: |
+          version="$(tr -d '[:space:]' < version.md)"
+          validator_version="$(git -C vendor/st2138-a describe --tags --always)"
+          if [[ "$version" != "$validator_version" ]]; then
+            echo "version.md is '$version', but vendor/st2138-a is '$validator_version'." >&2
+            exit 1
+          fi
+
       - name: Resolve image tags
         id: tags
         shell: bash
@@ -49,7 +59,7 @@ jobs:
             } >> "$GITHUB_OUTPUT"
           else
             version="$(tr -d '[:space:]' < version.md)"
-            if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            if [[ ! "$version" =~ ^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
               echo "Invalid version.md value: $version" >&2
               exit 1
             fi
@@ -118,39 +128,3 @@ jobs:
             gh api --method DELETE \
               "/orgs/rossvideo/packages/container/st2138-tester/versions/$version_id"
           done <<< "$stale_ids"
-
-  increment-version:
-    if: github.ref == 'refs/heads/main'
-    needs: publish
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Check out main
-        uses: actions/checkout@v7
-        with:
-          ref: main
-
-      - name: Increment patch version
-        id: bump
-        shell: bash
-        run: |
-          version="$(tr -d '[:space:]' < version.md)"
-          if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-            echo "Invalid version.md value: $version" >&2
-            exit 1
-          fi
-          IFS=. read -r major minor patch <<< "$version"
-          next_version="$major.$minor.$((patch + 1))"
-          printf '%s\n' "$next_version" > version.md
-          echo "version=$next_version" >> "$GITHUB_OUTPUT"
-
-      - name: Commit version bump
-        env:
-          NEXT_VERSION: ${{ steps.bump.outputs.version }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add version.md
-          git commit -m "chore: bump version to $NEXT_VERSION"
-          git push origin HEAD:main

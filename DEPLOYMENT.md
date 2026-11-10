@@ -19,11 +19,11 @@ Updates to `dev` publish `ghcr.io/rossvideo/st2138-tester` for `linux/amd64`
 and `linux/arm64`, move the `dev-latest` tag, and publish `dev-YYYYMMDD` and
 `dev-YYYYMMDD-SHA` tags. The workflow retains only the three newest dev image
 versions and does not delete `main` tags. Updates to `main` publish the same
-multi-architecture image as `latest` and the version in [version.md](version.md),
-then increment the patch version in a bot commit. The GitHub Actions workflow
-needs permission to write packages and push the version bump to `main`; branch
-protection must allow that bot push. Set the GHCR package visibility separately
-if the image should be public.
+multi-architecture image as `latest` and the version in [version.md](version.md).
+Keep `version.md` identical on `dev` and `main` and matching
+`git -C vendor/st2138-a describe --tags --always`; update it only when the
+submodule revision changes. The workflow checks this match before publishing.
+Set the GHCR package visibility separately if the image should be public.
 
 ## Security automation
 

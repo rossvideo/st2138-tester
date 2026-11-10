@@ -15,7 +15,7 @@ architecture automatically.
 | `dev-YYYYMMDD` | Most recent `dev` build for that UTC date |
 | `dev-YYYYMMDD-SHA` | Specific `dev` build, identified by commit SHA |
 | `latest` | Most recent `main` build |
-| `X.Y.Z` | Versioned `main` build; see [version.md](version.md) |
+| Version in `version.md` | Versioned `main` build |
 
 Use `dev-latest` for ongoing testing, or use a date/SHA tag to pin a specific
 build. Only the three newest dev image versions are retained. Use `latest` for
@@ -32,9 +32,10 @@ package visibility in GitHub Packages if anonymous pulls should be allowed.
 
 Updates to `dev` move `dev-latest`, publish date and date-plus-SHA tags, and
 prune dev images older than the three newest versions. Updates to `main` publish
-the same image as `latest` and the current semantic version, then increment the
-patch version in `version.md` for the next build. See [Deployment](DEPLOYMENT.md)
-for publishing and platform details.
+the same image as `latest` and the version in `version.md`. Keep that file in
+sync on both branches with the ST 2138-a submodule version; change it only when
+updating the submodule. See [Deployment](DEPLOYMENT.md) for publishing and
+platform details.
 
 The container binds to localhost in these examples. The app has no sign-in,
 CAPTCHA, or application-level rate limit, and it makes outbound requests to the
