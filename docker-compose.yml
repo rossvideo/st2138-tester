@@ -17,3 +17,12 @@ services:
     mem_limit: 1536m
     cpus: 2
     restart: unless-stopped
+
+# http://test-your-catena-catena-test-app-1:9080 for REST
+# http://test-your-catena-catena-test-app-1:6254 for gRPC
+  # catena-test-app:
+  #   image: ghcr.io/rossvideo/catena:go-one-of-everything-dev
+  #   environment:
+  #     - CATENA_USE_GRPC=true
+  #     - CATENA_USE_REST=true
+  #     - CATENA_AUTHZ=false

@@ -34,8 +34,8 @@ Updates to `dev` move `dev-latest`, publish date and date-plus-SHA tags, and
 prune dev images older than the three newest versions. Updates to `main` publish
 the same image as `latest` and the version in `version.md`. Keep that file in
 sync on both branches with the ST 2138-a submodule version; change it only when
-updating the submodule. See [Deployment](DEPLOYMENT.md) for publishing and
-platform details.
+the validator's `VERSION` changes. See [Deployment](DEPLOYMENT.md) for
+publishing and platform details.
 
 The container binds to localhost in these examples. The app has no sign-in,
 CAPTCHA, or application-level rate limit, and it makes outbound requests to the

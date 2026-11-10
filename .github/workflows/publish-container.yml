@@ -34,7 +34,7 @@ jobs:
         shell: bash
         run: |
           version="$(tr -d '[:space:]' < version.md)"
-          validator_version="$(git -C vendor/st2138-a describe --tags --always)"
+          validator_version="$(tr -d '[:space:]' < vendor/st2138-a/VERSION)"
           if [[ "$version" != "$validator_version" ]]; then
             echo "version.md is '$version', but vendor/st2138-a is '$validator_version'." >&2
             exit 1

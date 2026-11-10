@@ -21,8 +21,8 @@ and `linux/arm64`, move the `dev-latest` tag, and publish `dev-YYYYMMDD` and
 versions and does not delete `main` tags. Updates to `main` publish the same
 multi-architecture image as `latest` and the version in [version.md](version.md).
 Keep `version.md` identical on `dev` and `main` and matching
-`git -C vendor/st2138-a describe --tags --always`; update it only when the
-submodule revision changes. The workflow checks this match before publishing.
+`vendor/st2138-a/VERSION`; update it only when that version changes. The workflow
+checks this match before publishing.
 Set the GHCR package visibility separately if the image should be public.
 
 ## Security automation
