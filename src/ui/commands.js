@@ -1,4 +1,5 @@
 import { executeCommand } from './api.js';
+import { responseValidationOutput } from './validation.js';
 
 export function bindCommandRunner(getConnection) {
   const commandGroups = document.getElementById('commandGroups');
@@ -44,15 +45,7 @@ export function bindCommandRunner(getConnection) {
       });
       output.textContent = JSON.stringify({
         response: result.response ?? null,
-        validation: result.validation ? {
-          schema: result.validation.schema,
-          ran: result.validation.ran,
-          ok: result.validation.ok,
-          note: result.validation.note,
-          diagnostics: result.validation.stdout
-            ? [result.validation.stdout]
-            : result.validation.results?.map((item) => item.stdout || item.error)
-        } : null
+        validation: responseValidationOutput(result.validation)
       }, null, 2);
       output.dataset.outcome = result.ok ? 'pass' : 'fail';
       status.textContent = result.ok ? 'Command completed' : `Command failed${result.status ? ` · ${result.status}` : ''}`;

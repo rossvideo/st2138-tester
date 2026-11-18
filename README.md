@@ -65,8 +65,14 @@ validation rather than full `push_updates` schema validation because the
 vendored schema does not match the protobuf update representation.
 
 The report includes schema results, parameter and endpoint checks, response
-validation details, and device metadata. Reports and device payloads stay in the
-browser for the current run; they are not saved as server-side history.
+validation details, and device metadata. Expand **Validator details** to see
+the schema or tester rule name, its result, and any warnings or errors, without
+the full definition. Manual endpoint and command responses use the same style.
+Connect groups checks into one compact block per streamed chunk, with the result for `push_updates` (REST) or
+`PushUpdates` (gRPC) followed by separately spaced and indented submember
+checks. Manual Connect results instead list those checks as separate entries in
+each chunk's `submembers` array. Reports and device payloads stay in the browser for the current run;
+they are not saved as server-side history.
 
 JWTs are sent as REST `Authorization: Bearer` headers or gRPC authorization
 metadata. They are cleared when changing devices and redacted from reports. The

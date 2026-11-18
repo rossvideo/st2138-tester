@@ -36,6 +36,9 @@ export type St2138ValidateResult = {
   failingLines: number[];
   failingLineContent: Array<{ line: number; content: string }>;
   error?: string;
+  test?: { name: string; kind: 'JSON Schema' | 'Tester rule'; definition: object | string };
+  chunk?: number;
+  submember?: string;
 };
 
 function extractFailingLines(...sources: Array<string | undefined>): number[] {
@@ -110,6 +113,13 @@ function stripKeysRecursive(value: any, isRoot = true): any {
 // Regenerated once per process so a `git submodule update` is picked up on restart.
 let schemaBuild: Promise<void> | null = null;
 let validatorEngine: any;
+let schemaDefinitions: Record<string, object>;
+let deviceDefinition: object;
+
+function schemaTest(name: string): St2138ValidateResult['test'] {
+  const definition = name === 'device' ? deviceDefinition : schemaDefinitions?.[name];
+  return definition ? { name, kind: 'JSON Schema', definition } : undefined;
+}
 
 function ensureDeviceSchemaJson(): Promise<void> {
   if (!schemaBuild) {
@@ -125,6 +135,9 @@ function ensureDeviceSchemaJson(): Promise<void> {
       } finally {
         await fs.rm(temporarySchema, { force: true });
       }
+      const { $defs, ...root } = sanitized;
+      schemaDefinitions = $defs;
+      deviceDefinition = root;
     })().catch((err) => {
       // Allow a retry on the next call if generation failed (e.g. submodule not
       // yet initialized when the first request landed).
@@ -173,6 +186,7 @@ export async function runSt2138ValidateJsOnModel(model: unknown): Promise<St2138
     return {
       ran: true,
       ok: validation.valid,
+      test: schemaTest('device'),
       exitCode: validation.valid ? 0 : 2,
       stdout: stdout.trim(),
       stderr: '',
@@ -192,6 +206,7 @@ export async function runSt2138ValidateJsOnModel(model: unknown): Promise<St2138
     return {
       ran: true,
       ok: false,
+      test: schemaTest('device'),
       exitCode,
       stdout,
       stderr,
@@ -234,6 +249,7 @@ export async function runSt2138ValidateResponse(schemaName: string, value: unkno
     return {
       ran: true,
       ok: validation.valid,
+      test: schemaTest(schemaName),
       exitCode: validation.valid ? 0 : 2,
       stdout,
       stderr: '',
@@ -245,6 +261,7 @@ export async function runSt2138ValidateResponse(schemaName: string, value: unkno
     return {
       ran: true,
       ok: false,
+      test: schemaTest(schemaName),
       exitCode: null,
       stdout: '',
       stderr: '',

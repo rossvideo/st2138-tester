@@ -12,6 +12,8 @@ const { runEndpointAudit } = require('../src/openapi/endpoint-audit');
 const { executeEndpoint } = require('../src/openapi/endpoint-audit');
 const { runManualEndpoint } = require('../src/services/manual-endpoint');
 const { validateEndpointResponse } = require('../src/services/response-validation');
+const { responseValidationOutput, validationDiagnostics } = require('../src/ui/validation.js');
+const { renderReport } = require('../src/ui/render.js');
 const { scanRestDevice, scanGrpcDevice, grpcComponentsToDeviceModel, validateGrpcComponents } = require('../src/services/device-scan');
 const { executeDeviceCommand } = require('../src/services/command-execution');
 const { configureDeviceTransport } = require('../src/security/device-transport');
@@ -162,6 +164,8 @@ test('Connect skips SSE heartbeats and validates actual update fields', async ()
     assert.equal(result.ok, true);
     assert.equal(result.validation.schema, 'PushUpdates field validation');
     assert.match(result.responsePreview, /slots_added/);
+    assert.match(result.validation.results[0].stdout,
+      /Applying tester rule 'push_updates' to streamed update 1\nShape check passed\./);
     for (const payload of [
       { slot: 0, slots_added: { slots: [-1] } },
       { slot: 0, value: { oid: 'counter', value: { int32_value: 1 } }, slots_added: { slots: [0] } },
@@ -181,12 +185,41 @@ test('Connect skips SSE heartbeats and validates actual update fields', async ()
       status: 0, payload: [{ slots_added: { slots: [0] } }], isStream: true
     });
     assert.equal(grpcDefaultSlot.ok, true);
+    assert.match(grpcDefaultSlot.results[0].stdout, /Applying tester rule 'PushUpdates' to streamed update 1/);
     const removed = await validateEndpointResponse({
       protocol: 'grpc', method: 'Connect', endpoint: 'CatenaService.Connect',
       status: 0, payload: [{ remove_device_components: { params: { oids: ['counter'] } } }], isStream: true
     });
     assert.equal(removed.ok, true);
   });
+
+test('Connect diagnostics identify each streamed update and its shape result', async () => {
+  const validation = await validateEndpointResponse({
+    protocol: 'rest', method: 'GET', endpoint: '/st2138-api/v1/connect',
+    status: 200, isStream: true, payload: [
+      { slot: 0, value: { oid: 'counter', value: { int32_value: 1 } } },
+      { slot: 0, slots_added: { slots: [-1] } },
+      { slots_added: { slots: [0] } }
+    ]
+  });
+  const { diagnostics: chunks } = JSON.parse(JSON.stringify(responseValidationOutput(validation)));
+  assert.deepEqual(chunks.map(chunk => chunk.chunk), [1, 2, 3]);
+  assert.match(chunks[0].result, /response chunk 1\n✅ Passed$/);
+  assert.doesNotMatch(chunks[0].result, /submember/);
+  assert.deepEqual(chunks[0].submembers.map(check => check.member), ['slot', 'value', 'value.oid', 'value.value']);
+  assert.match(chunks[0].submembers[2].result, /Applying "fqoid" to submember value\.oid\n✅ Passed$/);
+  assert.match(chunks[1].result, /response chunk 2\n❌ Failed$/);
+  assert.match(chunks[1].submembers[1].result, /Applying "slot_list" to submember slots_added\n❌ Failed\nERROR:/);
+  assert.deepEqual(chunks[2].submembers, []);
+  const diagnostics = validationDiagnostics(validation);
+  assert.match(diagnostics[0], /^Applying tester rule "push_updates" to response chunk 1\n✅ Passed\n/);
+  assert.match(diagnostics[0], /\n\n  Applying "fqoid" to submember value\.oid\n  ✅ Passed\n\n  Applying "value" to submember value\.value\n  ✅ Passed/);
+  assert.doesNotMatch(diagnostics[0], /No other fields are allowed|"\$ref"/);
+  assert.match(diagnostics[1], /^Applying tester rule "push_updates" to response chunk 2\n❌ Failed\n/);
+  assert.match(diagnostics[1], /\n\n  Applying "slot_list" to submember slots_added\n  ❌ Failed\n  ERROR:/);
+  assert.match(diagnostics[2], /^Applying tester rule "push_updates" to response chunk 3\n❌ Failed\nERROR:/);
+  assert.doesNotMatch(diagnostics[2], /to submember/);
+});
 
   test('REST Connect negotiates HTTP/2 and respects TLS and authorization settings', async context => {
     const key = fs.readFileSync(path.join(__dirname, 'fixtures/test-device-key.pem'));
@@ -301,6 +334,46 @@ test('validates a language list as one ST 2138 array response', async () => {
   assert.equal(result.ran, true);
   assert.equal(result.ok, true);
   assert.equal(result.results.length, 1);
+  const [diagnostic] = responseValidationOutput(result).diagnostics;
+  assert.equal(diagnostic, 'Applying "language_list" to response\n✅ Passed');
+  const [check] = result.results;
+  const [warning] = validationDiagnostics({
+    ...result,
+    results: [{ ...check, stdout: check.stdout.replace('✅ Schema validation succeeded.', 'WARNING: Example warning\n✅ Schema validation succeeded.') }]
+  });
+  assert.equal(warning, `${diagnostic}\nWARNING: Example warning`);
+});
+
+test('shows compact validator checks and failure diagnostics in both report views', async t => {
+  const endpoint = '/st2138-api/v1/1/languages';
+  const validation = await validateEndpointResponse({
+    protocol: 'rest', method: 'GET', endpoint, status: 200, payload: [123]
+  });
+  const elements = new Map();
+  const previous = globalThis.document;
+  globalThis.document = {
+    getElementById(id) {
+      if (!elements.has(id)) elements.set(id, {});
+      return elements.get(id);
+    }
+  };
+  t.after(() => { globalThis.document = previous; });
+  renderReport({
+    protocol: 'rest', deviceUrl: 'http://device.test', scannedAt: new Date().toISOString(),
+    summary: { total: 1, passed: 0, failed: 1 },
+    slots: [{ slot: 1, ok: false }],
+    endpointAudit: [{
+      endpoint, pathTemplate: '/{slot}/languages', slot: 1, method: 'GET',
+      tested: true, ok: false, status: 200, validation
+    }]
+  });
+  for (const id of ['slotResults', 'endpointAudit']) {
+    const markup = elements.get(id).innerHTML;
+    assert.match(markup, /<summary>Validator details<\/summary>/);
+    assert.match(markup, /Applying &quot;language_list&quot; to response\n❌ Failed/);
+    assert.doesNotMatch(markup, /\$ref|Validation failed\./);
+    assert.match(markup, /must be string/);
+  }
 });
 
 test('uses the protobuf ParamInfo shape for gRPC but the OpenAPI schema for REST', async () => {
@@ -323,6 +396,10 @@ test('uses the protobuf ParamInfo shape for gRPC but the OpenAPI schema for REST
 
   assert.equal(grpcResult.ok, true);
   assert.equal(grpcResult.schema, 'protobuf ParamInfoResponse');
+  const diagnostics = responseValidationOutput(grpcResult).diagnostics.join('\n');
+  assert.match(diagnostics, /Applying tester rule "ParamInfoResponse shape" to response\n✅ Passed/);
+  assert.match(diagnostics, /Applying "fqoid" to response\n✅ Passed/);
+  assert.doesNotMatch(diagnostics, /An object with only info|Schema validation succeeded/);
   assert.equal(restResult.ok, false);
   assert.equal(restResult.schema, 'param_info_response');
   assert.match(restResult.results[0].stdout, /required property 'param'/);

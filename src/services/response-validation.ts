@@ -8,9 +8,11 @@ export type ResponseValidation = {
   results: St2138ValidateResult[];
 };
 
-function invalidShape(message: string): St2138ValidateResult {
+function shapeCheck(name: string, definition: string, ok: boolean, message: string, target = 'response'): St2138ValidateResult {
   return {
-    ran: true, ok: false, exitCode: 2, stdout: `ERROR: ${message}`, stderr: '',
+    ran: true, ok, exitCode: ok ? 0 : 2, stderr: '',
+    stdout: `Applying tester rule '${name}' to ${target}\n${ok ? 'Shape check passed.' : `ERROR: ${message}`}`,
+    test: { name, kind: 'Tester rule', definition },
     failingLine: null, failingLines: [], failingLineContent: []
   };
 }
@@ -91,6 +93,9 @@ async function validateComponentParams(payload: unknown): Promise<ResponseValida
       results.push(await runSt2138ValidateResponse('component_param', item));
       continue;
     }
+    results.push(shapeCheck('Parameter component shape',
+      'An object with only oid and param, where oid is a string and param is present. Validate oid and param separately.', true,
+      'Expected a parameter component with oid and param.'));
     results.push(await runSt2138ValidateResponse('fqoid', (item as any).oid));
     results.push(await runSt2138ValidateResponse('param', (item as any).param));
   }
@@ -144,25 +149,27 @@ async function validateGrpcParamInfoResponse(payload: unknown): Promise<Response
   const results: St2138ValidateResult[] = [];
   const allowedResponseKeys = new Set(['info', 'array_length']);
   const allowedInfoKeys = new Set(['oid', 'name', 'type', 'template_oid']);
+  const responseRule = `An object with only ${[...allowedResponseKeys].join(', ')}; info must be an object.`;
+  const infoRule = `An object with only ${[...allowedInfoKeys].join(', ')}; oid and type must be strings.`;
 
   for (const item of items) {
     if (!item || typeof item !== 'object' || Array.isArray(item)) {
-      results.push(invalidShape('ParamInfoResponse must be an object.'));
+      results.push(shapeCheck('ParamInfoResponse shape', responseRule, false, 'ParamInfoResponse must be an object.'));
       continue;
     }
     const response = item as Record<string, any>;
-    if (Object.keys(response).some((key) => !allowedResponseKeys.has(key))
-      || !response.info || typeof response.info !== 'object' || Array.isArray(response.info)) {
-      results.push(invalidShape('ParamInfoResponse must contain an info object and optional array_length.'));
-      continue;
-    }
+    const responseOk = Object.keys(response).every(key => allowedResponseKeys.has(key))
+      && !!response.info && typeof response.info === 'object' && !Array.isArray(response.info);
+    results.push(shapeCheck('ParamInfoResponse shape', responseRule, responseOk,
+      'ParamInfoResponse must contain an info object and optional array_length.'));
+    if (!responseOk) continue;
 
     const info = response.info as Record<string, any>;
-    if (Object.keys(info).some((key) => !allowedInfoKeys.has(key))
-      || typeof info.oid !== 'string' || typeof info.type !== 'string') {
-      results.push(invalidShape('ParamInfo must contain a valid oid and type, with only protobuf-defined fields.'));
-      continue;
-    }
+    const infoOk = Object.keys(info).every(key => allowedInfoKeys.has(key))
+      && typeof info.oid === 'string' && typeof info.type === 'string';
+    results.push(shapeCheck('ParamInfo shape', infoRule, infoOk,
+      'ParamInfo must contain a valid oid and type, with only protobuf-defined fields.'));
+    if (!infoOk) continue;
 
     results.push(await runSt2138ValidateResponse('fqoid', info.oid));
     results.push(await runSt2138ValidateResponse('param_type', info.type));
@@ -196,59 +203,74 @@ async function validatePushUpdates(payload: unknown, protocol: 'rest' | 'grpc'):
     value !== null && typeof value === 'object' && !Array.isArray(value);
   const hasOnly = (value: Record<string, unknown>, keys: string[]) =>
     Object.keys(value).every(key => keys.includes(key));
+  const ruleName = protocol === 'rest' ? 'push_updates' : 'PushUpdates';
+  const updateRule = `An object with ${protocol === 'rest' ? 'a required slot' : 'an optional slot (defaults to 0)'} and exactly one of: ${kinds.join(', ')}. No other fields are allowed. Validate slot and the selected update separately.`;
 
-  for (const update of updates) {
-    if (!isRecord(update) || !hasOnly(update, ['slot', ...kinds])
-      || kinds.filter(kind => kind in update).length !== 1
-      || (protocol === 'rest' && !('slot' in update))) {
-      results.push(invalidShape('PushUpdates must contain a slot and exactly one recognized update.'));
-      continue;
-    }
-    results.push(await runSt2138ValidateResponse('slot', 'slot' in update ? update.slot : 0));
+  for (const [index, update] of updates.entries()) {
+    const target = `streamed update ${index + 1}`;
+    const updateOk = isRecord(update) && hasOnly(update, ['slot', ...kinds])
+      && kinds.filter(kind => kind in update).length === 1
+      && (protocol === 'grpc' || 'slot' in update);
+    results.push({ ...shapeCheck(ruleName, updateRule, updateOk,
+      'PushUpdates must contain exactly one recognized update and, for REST, a slot.', target), chunk: index + 1 });
+    if (!updateOk) continue;
     const kind = kinds.find(key => key in update)!;
     const value = update[kind];
+    const addCheck = (result: St2138ValidateResult, submember = kind) => {
+      results.push({ ...result, submember });
+    };
+    const checkSchema = async (schema: string, fieldValue: unknown, submember = kind) => {
+      addCheck(await runSt2138ValidateResponse(schema, fieldValue), submember);
+    };
+    await checkSchema('slot', 'slot' in update ? update.slot : 0, 'slot');
     if (kind === 'value' || kind === 'external_object') {
       const field = kind === 'value' ? 'value' : 'external_object';
-      if (!isRecord(value) || !hasOnly(value, ['oid', field]) || !('oid' in value) || !(field in value)) {
-        results.push(invalidShape(`${kind} must contain oid and ${field}.`));
-      } else {
-        results.push(await runSt2138ValidateResponse('fqoid', value.oid));
-        results.push(await runSt2138ValidateResponse(kind === 'value' ? 'value' : 'external_object_payload', value[field]));
+      const valid = isRecord(value) && hasOnly(value, ['oid', field]) && 'oid' in value && field in value;
+      addCheck(shapeCheck(`${kind} shape`, `An object with oid and ${field}, and no other fields.`, valid,
+        `${kind} must contain oid and ${field}.`, target));
+      if (valid) {
+        await checkSchema('fqoid', value.oid, `${kind}.oid`);
+        await checkSchema(kind === 'value' ? 'value' : 'external_object_payload', value[field], `${kind}.${field}`);
       }
     } else if (kind === 'device_component') {
       const componentKinds = ['device', 'param', 'shared_constraint', 'menu', 'command', 'language_pack'];
-      if (!isRecord(value) || !hasOnly(value, componentKinds)
-        || componentKinds.filter(key => key in value).length !== 1) {
-        results.push(invalidShape('device_component must contain exactly one recognized component.'));
-      } else {
-        results.push(...await validateDeviceComponentEvent(value, typeof update.slot === 'number' ? update.slot : 0));
+      const valid = isRecord(value) && hasOnly(value, componentKinds)
+        && componentKinds.filter(key => key in value).length === 1;
+      addCheck(shapeCheck('Device component shape', `An object with exactly one of: ${componentKinds.join(', ')}.`, valid,
+        'device_component must contain exactly one recognized component.', target));
+      if (valid) {
+        for (const result of await validateDeviceComponentEvent(value, typeof update.slot === 'number' ? update.slot : 0)) {
+          addCheck(result, `${kind}.${Object.keys(value)[0]}`);
+        }
       }
     } else if (kind === 'trap_message') {
-      if (!isRecord(value) || !hasOnly(value, ['type', 'trap_data'])
-        || ('trap_data' in value && (!Array.isArray(value.trap_data) || !value.trap_data.every(item => typeof item === 'string')))) {
-        results.push(invalidShape('trap_message must contain a valid type and string trap_data.'));
-      } else {
-        results.push(await runSt2138ValidateResponse('trap_message_type', 'type' in value ? value.type : 0));
+      const valid = isRecord(value) && hasOnly(value, ['type', 'trap_data'])
+        && (!('trap_data' in value) || (Array.isArray(value.trap_data) && value.trap_data.every(item => typeof item === 'string')));
+      addCheck(shapeCheck('Trap message shape', 'An object with only type (defaults to 0) and optional trap_data (an array of strings).', valid,
+        'trap_message must contain a valid type and string trap_data.', target));
+      if (valid) {
+        await checkSchema('trap_message_type', 'type' in value ? value.type : 0, 'trap_message.type');
       }
     } else if (kind === 'slots_added' || kind === 'slots_removed') {
-      results.push(await runSt2138ValidateResponse('slot_list', value));
+      await checkSchema('slot_list', value);
     } else if (kind === 'remove_device_components') {
       if (isRecord(value) && Object.keys(value).length === 1) {
         const [component, ids] = Object.entries(value)[0];
         if (isRecord(ids) && hasOnly(ids, ['oids'])) {
-          results.push(await runSt2138ValidateResponse('push_remove_device_components', { [component]: ids.oids ?? [] }));
+          await checkSchema('push_remove_device_components', { [component]: ids.oids ?? [] });
         } else {
-          results.push(await runSt2138ValidateResponse('push_remove_device_components', value));
+          await checkSchema('push_remove_device_components', value);
         }
       } else {
-        results.push(await runSt2138ValidateResponse('push_remove_device_components', value));
+        await checkSchema('push_remove_device_components', value);
       }
     } else if (kind === 'refused') {
-      results.push(await runSt2138ValidateResponse('exception', value));
+      await checkSchema('exception', value);
     } else if (kind === 'invalidate_device_model') {
-      results.push(await runSt2138ValidateResponse('push_invalidate_device_model', { invalidate_device_model: value }));
-    } else if (typeof value !== 'string') {
-      results.push(invalidShape('invalidated_external_object_id must be a string.'));
+      await checkSchema('push_invalidate_device_model', { invalidate_device_model: value });
+    } else {
+      addCheck(shapeCheck('Invalidated external object ID', 'A string.', typeof value === 'string',
+        'invalidated_external_object_id must be a string.', target));
     }
   }
   const ok = results.every(result => result.ok);

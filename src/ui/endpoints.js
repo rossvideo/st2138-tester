@@ -1,4 +1,5 @@
 import { runEndpoint } from './api.js';
+import { responseValidationOutput } from './validation.js';
 
 function parseOptionalJson(text, label) {
   if (!text.trim()) return undefined;
@@ -64,19 +65,10 @@ export function bindEndpointRunner(getConnection) {
         body,
         isStream: form.dataset.stream === 'true'
       });
-      const validation = result.validation;
       output.textContent = JSON.stringify({
         response: result.response,
         ...(result.error ? { error: result.error } : {}),
-        validation: validation ? {
-          schema: validation.schema,
-          ran: validation.ran,
-          ok: validation.ok,
-          note: validation.note,
-          diagnostics: validation.stdout
-            ? [validation.stdout]
-            : validation.results?.map((item) => item.stdout || item.error)
-        } : null
+        validation: responseValidationOutput(result.validation)
       }, null, 2);
       output.dataset.outcome = result.ok ? 'pass' : 'fail';
       status.textContent = result.ok

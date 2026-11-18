@@ -1,3 +1,5 @@
+import { validationDiagnostics } from './validation.js';
+
 function escapeHtml(value) {
   return String(value ?? '')
     .replaceAll('&', '&amp;')
@@ -11,12 +13,19 @@ function formatJson(value) {
   return escapeHtml(JSON.stringify(value, null, 2) ?? 'No model was returned.');
 }
 
-function validationMarkup(validation) {
+function validatorDetails(validations) {
+  const diagnostics = validations.flatMap(validationDiagnostics).join('\n\n');
+  return diagnostics ? `<details><summary>Validator details</summary><pre>${escapeHtml(diagnostics)}</pre></details>` : '';
+}
+
+function validationMarkup(validation, expandable = false) {
   if (!validation) return '<p class="quiet-text">Validation was not run.</p>';
   const tone = validation.ran ? (validation.ok ? 'pass-text' : 'fail-text') : 'quiet-text';
   const label = validation.ran ? (validation.ok ? 'PASSED' : 'FAILED') : 'NOT RUN';
-  const details = [validation.stdout, validation.stderr, validation.error].filter(Boolean).join('\n\n');
-  return `<div class="diagnostic-line"><span>ST 2138 validation</span><strong class="${tone}">${label}</strong></div>${details ? `<pre>${escapeHtml(details)}</pre>` : ''}`;
+  const summary = `<div class="diagnostic-line"><span>ST 2138 validation</span><strong class="${tone}">${label}</strong></div>`;
+  if (expandable) return summary + validatorDetails([validation]);
+  const details = validationDiagnostics(validation).join('\n\n');
+  return summary + (details ? `<pre>${escapeHtml(details)}</pre>` : '');
 }
 
 function memberCheckMarkup(check) {
@@ -34,7 +43,7 @@ function memberCheckMarkup(check) {
     <summary><span>${escapeHtml(label)}</span><span class="${step.ok ? 'pass-text' : 'fail-text'}">${step.ok ? 'PASS' : 'FAIL'}</span></summary>
     ${step.error || step.warning ? `<p>${escapeHtml(step.error || step.warning)}</p>` : ''}
     <pre>${formatJson({ status: step.status, request: step.request, response: step.response })}</pre>
-    ${step.validation ? validationMarkup(step.validation) : ''}
+    ${step.validation ? validationMarkup(step.validation, true) : ''}
   </details>`;
   }).join('');
   return `<details class="member-check ${check.readOnly ? 'is-read-only' : ''}">
@@ -68,7 +77,7 @@ function apiEndpointCheckMarkup(endpoint) {
   const rowLabel = endpoint.protocol === 'grpc'
     ? (endpoint.oid ? `${endpoint.oid} - ${grpcMethod}` : grpcMethod)
     : `${endpoint.method} · ${restTargetLabel}`;
-  const validation = Array.isArray(endpoint.validation) ? endpoint.validation : endpoint.validation ? [endpoint.validation] : [];
+  const validation = (Array.isArray(endpoint.validation) ? endpoint.validation : [endpoint.validation]).filter(Boolean);
   const validationText = validation.map((item) => {
     if (!item) return '';
     return `${item.schema || 'Response'}: ${item.ran === false ? 'not run' : item.ok ? 'passed' : 'failed'}${item.note ? ` (${item.note})` : ''}`;
@@ -79,6 +88,7 @@ function apiEndpointCheckMarkup(endpoint) {
       ${endpoint.note ? `<p>${escapeHtml(endpoint.note)}</p>` : ''}
       <div class="diagnostic-line"><span>Status</span><strong class="${statusTone}">${isNotRun ? 'Not run' : escapeHtml(endpoint.status)}</strong></div>
       ${validationText ? `<pre class="api-validation-summary">${escapeHtml(validationText)}</pre>` : ''}
+      ${validatorDetails(validation)}
       <div class="endpoint-previews"><div><h3>Request</h3><pre>${escapeHtml(endpoint.requestPreview || '(not sent)')}</pre></div><div><h3>Response</h3><pre>${escapeHtml(endpoint.responsePreview || '(not returned)')}</pre></div></div>
     </div>
   </details>`;
@@ -148,7 +158,7 @@ function endpointMarkup(endpoint) {
   const body = endpoint.manualBody !== undefined ? JSON.stringify(endpoint.manualBody, null, 2)
     : endpoint.manualRequest !== undefined ? JSON.stringify(endpoint.manualRequest, null, 2) : '';
   const manualRequest = endpoint.manualRequest === undefined ? '' : JSON.stringify(endpoint.manualRequest);
-  const validations = Array.isArray(endpoint.validation) ? endpoint.validation : endpoint.validation ? [endpoint.validation] : [];
+  const validations = (Array.isArray(endpoint.validation) ? endpoint.validation : [endpoint.validation]).filter(Boolean);
   const executedValidations = validations.filter((validation) => validation?.ran !== false);
   const validationRan = executedValidations.length > 0;
   const validationOk = validationRan && executedValidations.every((validation) => validation?.ok);
@@ -156,7 +166,6 @@ function endpointMarkup(endpoint) {
   const validationStatus = validations.length === 0 ? '' : validationFailed ? 'invalid response' : validationOk
     ? validations.some((validation) => validation?.schema === 'PushUpdates field validation') ? 'update fields validated' : 'valid response'
     : validations.find((validation) => validation?.note)?.note || 'response not validated';
-  const validationDetails = validations.flatMap((validation) => validation?.stdout ? [validation.stdout] : validation?.results?.map((result) => result.stdout || result.error).filter(Boolean) || []).join('\n\n');
   const manualForm = `<form class="endpoint-manual-form" data-protocol="${escapeHtml(endpoint.protocol || '')}" data-method="${escapeHtml(endpoint.method)}" data-endpoint="${escapeHtml(endpoint.endpoint)}" data-slot="${endpoint.slot === null ? '' : escapeHtml(endpoint.slot)}" data-stream="${Boolean(endpoint.isStream)}" data-mutating="${Boolean(endpoint.mutating)}" data-manual-request="${escapeHtml(manualRequest)}">
       ${bodyCapable ? `<label class="field-label">Request body <span class="label-optional">(optional JSON)</span></label><textarea class="endpoint-manual-body" spellcheck="false" placeholder="{}">${escapeHtml(body)}</textarea>` : ''}
       <div class="endpoint-manual-actions"><button class="outline-button" type="submit">Run manually <span aria-hidden="true">↗</span></button><span class="endpoint-manual-status" role="status" aria-live="polite"></span></div><pre class="endpoint-manual-response" hidden></pre>
@@ -164,7 +173,7 @@ function endpointMarkup(endpoint) {
   return `<details class="endpoint-result ${status}"><summary><span class="endpoint-method">${escapeHtml(endpoint.operation || endpoint.method)}</span><span class="endpoint-path">${escapeHtml(title)}${endpoint.title ? `<small>${escapeHtml(endpoint.endpoint)}</small>` : ''}${endpoint.readOnly ? '<small class="readonly-tag">READ ONLY</small>' : ''}</span><strong>${label}</strong></summary>
     <div class="endpoint-diagnostics">${endpoint.note ? `<p>${escapeHtml(endpoint.note)}</p>` : ''}
       <div class="endpoint-previews"><div><h3>Request</h3><pre>${escapeHtml(endpoint.requestPreview)}</pre></div><div><h3>Response</h3><pre>${escapeHtml(endpoint.responsePreview)}</pre></div></div>
-      ${validationStatus ? `<div class="endpoint-validation ${validationOk ? 'pass-text' : validationRan ? 'fail-text' : 'quiet-text'}">ST 2138: ${escapeHtml(validationStatus)}${validationDetails ? `<details><summary>Validator details</summary><pre>${escapeHtml(validationDetails)}</pre></details>` : ''}</div>` : ''}${manualForm}
+      ${validationStatus ? `<div class="endpoint-validation ${validationOk ? 'pass-text' : validationRan ? 'fail-text' : 'quiet-text'}">ST 2138: ${escapeHtml(validationStatus)}${validatorDetails(validations)}</div>` : ''}${manualForm}
     </div></details>`;
 }
 
