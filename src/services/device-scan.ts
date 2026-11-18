@@ -7,7 +7,7 @@ import { getOpenApiSpec, OpenApiSpecInfo } from '../openapi/openapi-spec';
 import { runGrpcApiChecks, runGrpcMemberChecks, runRestMemberChecks } from './member-checks';
 import { runSt2138ValidateJsOnModel, runSt2138ValidateResponse } from '../validation/st2138-cli-validator';
 import { validateEndpointResponse, ResponseValidation } from './response-validation';
-import { restTransportOptions, grpcTransport, streamCollector, mapDeviceSlots, grpcDeadline, DEVICE_REQUEST_TIMEOUT_MS } from '../security/device-transport';
+import { restTransportOptions, grpcTransport, streamCollector, mapDeviceSlots, grpcDeadline, captureGrpcConnect, DEVICE_REQUEST_TIMEOUT_MS } from '../security/device-transport';
 
 type DiscoveryAttempt = {
   endpoint: string;
@@ -647,6 +647,30 @@ export async function scanGrpcDevice(rawUrl: string, onProgress?: ScanProgress) 
       title: 'Discover populated slots',
       validation: slotListValidation
     });
+    onProgress?.('Checking the Connect update stream…');
+    let connectPayload: unknown[] | undefined;
+    let connectError: unknown;
+    try {
+      connectPayload = await captureGrpcConnect(client, {});
+    } catch (error) {
+      connectError = error;
+    }
+    const connectStatus = connectError && typeof (connectError as { code?: unknown }).code === 'number'
+      ? (connectError as { code: number }).code : connectError ? -1 : 0;
+    const connectValidation = connectError ? null : await validateEndpointResponse({
+      protocol: 'grpc', method: 'Connect', endpoint: 'CatenaService.Connect',
+      status: 0, payload: connectPayload, isStream: true
+    });
+    endpointAudit.push({
+      endpoint: 'CatenaService.Connect', pathTemplate: 'CatenaService.Connect',
+      slot: null, method: 'READ', operation: 'READ', isStream: true, mutating: false,
+      tested: true, status: connectStatus, ok: connectValidation?.ok === true,
+      notImplemented: connectStatus === grpc.status.UNIMPLEMENTED, warning: false,
+      schemaValid: connectValidation?.ok === true,
+      note: connectError ? (connectError instanceof Error ? connectError.message : String(connectError)) : connectValidation!.note,
+      requestPreview: '{}', responsePreview: connectError ? '(no response)' : JSON.stringify(connectPayload, null, 2),
+      title: 'Open streaming session', validation: connectValidation ?? undefined, manualRequest: {}
+    });
     onProgress?.(`Found ${slots.length} populated slot(s): ${slots.join(', ')}. Loading device models…`);
     const slotResults = await mapDeviceSlots(slots, async (slot) => {
       try {
@@ -755,7 +779,6 @@ export async function scanGrpcDevice(rawUrl: string, onProgress?: ScanProgress) 
       { method: 'ExternalObjectRequest', title: 'Read external object', reason: 'No external-object identifiers were discoverable in the device model.', operation: 'READ' },
       { method: 'MultiSetValue', title: 'Set multiple parameter values', reason: 'Batch writes are not run because the scan cannot guarantee transactional restoration.', operation: 'UPDATE' },
       { method: 'UpdateSubscriptions', title: 'Update subscriptions', reason: 'Subscription changes are not required for a model scan.', resourceGroup: 'Subscriptions', operation: 'UPDATE' },
-      { method: 'Connect', title: 'Open streaming session', reason: 'A long-lived session is not required for this scan.', operation: 'CREATE' },
       { method: 'AddLanguage', title: 'Add language pack', reason: 'Adding a language mutates device configuration.', operation: 'CREATE' },
       { method: 'RefreshToken', title: 'Refresh access token', reason: 'The scan does not establish an authenticated token session.', operation: 'UPDATE' },
       { method: 'RevokeAccess', title: 'Revoke access', reason: 'Access revocation is destructive and cannot be restored by the scan.', operation: 'DELETE' }

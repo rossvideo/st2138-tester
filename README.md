@@ -58,6 +58,12 @@ restore path are reported but not run automatically. Commands run only when you
 press their individual **Run** button; mutating manual requests require
 confirmation.
 
+Connect is checked as a long-lived stream: the scan captures an initial update
+and closes the connection, or reports that no update was available. HTTPS REST
+Connect uses HTTP/2 when the server supports it. Connect updates receive field
+validation rather than full `push_updates` schema validation because the
+vendored schema does not match the protobuf update representation.
+
 The report includes schema results, parameter and endpoint checks, response
 validation details, and device metadata. Reports and device payloads stay in the
 browser for the current run; they are not saved as server-side history.

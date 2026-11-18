@@ -153,7 +153,9 @@ function endpointMarkup(endpoint) {
   const validationRan = executedValidations.length > 0;
   const validationOk = validationRan && executedValidations.every((validation) => validation?.ok);
   const validationFailed = executedValidations.some((validation) => !validation?.ok);
-  const validationStatus = validations.length === 0 ? '' : validationFailed ? 'invalid response' : validationOk ? 'valid response' : validations.find((validation) => validation?.note)?.note || 'response not validated';
+  const validationStatus = validations.length === 0 ? '' : validationFailed ? 'invalid response' : validationOk
+    ? validations.some((validation) => validation?.schema === 'PushUpdates field validation') ? 'update fields validated' : 'valid response'
+    : validations.find((validation) => validation?.note)?.note || 'response not validated';
   const validationDetails = validations.flatMap((validation) => validation?.stdout ? [validation.stdout] : validation?.results?.map((result) => result.stdout || result.error).filter(Boolean) || []).join('\n\n');
   const manualForm = `<form class="endpoint-manual-form" data-protocol="${escapeHtml(endpoint.protocol || '')}" data-method="${escapeHtml(endpoint.method)}" data-endpoint="${escapeHtml(endpoint.endpoint)}" data-slot="${endpoint.slot === null ? '' : escapeHtml(endpoint.slot)}" data-stream="${Boolean(endpoint.isStream)}" data-mutating="${Boolean(endpoint.mutating)}" data-manual-request="${escapeHtml(manualRequest)}">
       ${bodyCapable ? `<label class="field-label">Request body <span class="label-optional">(optional JSON)</span></label><textarea class="endpoint-manual-body" spellcheck="false" placeholder="{}">${escapeHtml(body)}</textarea>` : ''}

@@ -1,6 +1,7 @@
 import type { AxiosInstance } from 'axios';
 import type { HttpMethod, OpenApiEndpoint } from './openapi-spec';
 import { validateEndpointResponse, ResponseValidation } from '../services/response-validation';
+import { connectStreamTransportOptions } from '../security/device-transport';
 
 /** Status that means "not implemented" per transport (lined up with Catena). */
 const REST_NOT_IMPLEMENTED_STATUS = 501;
@@ -251,7 +252,7 @@ function shortReason(status: number): string {
 type CallResult = {
   status: number;
   ok: boolean;
-  kind: 'ok' | 'http' | 'timeout' | 'error';
+  kind: 'ok' | 'http' | 'timeout' | 'error' | 'invalid-stream';
   payload?: any;
   /** Final request headers actually sent (from axios config). */
   requestHeaders?: unknown;
@@ -275,13 +276,22 @@ async function callStream(client: AxiosInstance, url: string, method: HttpMethod
       data: requestBody,
       responseType: 'stream',
       timeout: STREAM_TIMEOUT_MS,
+      ...(/\/connect(?:\?|$)/.test(url) ? await connectStreamTransportOptions(url) : {}),
       validateStatus: () => true
     });
 
     const stream = response.data;
+    if (/\/connect(?:\?|$)/.test(url) && response.status >= 200 && response.status < 300
+      && !/^text\/event-stream(?:\s*;|$)/i.test(String(response.headers?.['content-type'] || ''))) {
+      stream.destroy();
+      return {
+        status: response.status, ok: false, kind: 'invalid-stream', requestBody,
+        requestHeaders: response.config?.headers, responseHeaders: response.headers
+      };
+    }
     const payload = response.status >= 200 && response.status < 300
       ? await readFirstSseEvent(stream)
-      : undefined;
+      : (stream.destroy(), undefined);
 
     const ok = response.status >= 200 && response.status < 300;
     return {
@@ -320,24 +330,28 @@ function readFirstSseEvent(stream: any): Promise<unknown[]> {
     stream.on('data', (chunk: Buffer | string) => {
       if (settled) return;
       buffer += chunk.toString();
-      const boundary = buffer.search(/\r?\n\r?\n/);
-      if (boundary < 0) return;
-      const eventText = buffer.slice(0, boundary);
-      const data = eventText.split(/\r?\n/)
-        .filter((line) => line.startsWith('data:'))
-        .map((line) => line.slice(5).trim())
-        .join('\n');
-      if (!data) return finish([]);
-      try {
-        finish([JSON.parse(data)]);
-      } catch {
-        finish([data]);
+      let boundary: RegExpExecArray | null;
+      while ((boundary = /\r?\n\r?\n/.exec(buffer))) {
+        const eventText = buffer.slice(0, boundary.index);
+        buffer = buffer.slice(boundary.index + boundary[0].length);
+        const data = eventText.split(/\r?\n/)
+          .filter((line) => line.startsWith('data:'))
+          .map((line) => line.slice(5).trim())
+          .join('\n');
+        if (!data) continue;
+        try {
+          finish([JSON.parse(data)]);
+        } catch {
+          finish([data]);
+        }
+        return;
       }
     });
     stream.on('end', () => finish([]));
     stream.on('error', (error: Error) => {
       if (settled) return;
       settled = true;
+      clearTimeout(timer);
       reject(error);
     });
   });
@@ -465,6 +479,7 @@ export async function executeEndpoint(
   let note = '';
   if (call.kind === 'timeout') note = 'timeout';
   else if (call.kind === 'error') note = 'no response';
+  else if (call.kind === 'invalid-stream') note = 'expected text/event-stream';
   else if (warning) note = 'succeeded — DELETE only valid for assets/language-packs';
   else if (deleteOnNonDeletable && call.status === 405) note = 'expected — DELETE not supported here';
   else if (notImplemented) note = 'not implemented';

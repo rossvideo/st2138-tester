@@ -8,6 +8,13 @@ export type ResponseValidation = {
   results: St2138ValidateResult[];
 };
 
+function invalidShape(message: string): St2138ValidateResult {
+  return {
+    ran: true, ok: false, exitCode: 2, stdout: `ERROR: ${message}`, stderr: '',
+    failingLine: null, failingLines: [], failingLineContent: []
+  };
+}
+
 function restResponseSchema(method: string, endpoint: string, status: number, payload: any, isStream: boolean): string | null {
   if (status < 200 || status >= 300) return 'exception';
   if (endpoint.endsWith('/health')) return 'empty';
@@ -138,17 +145,6 @@ async function validateGrpcParamInfoResponse(payload: unknown): Promise<Response
   const allowedResponseKeys = new Set(['info', 'array_length']);
   const allowedInfoKeys = new Set(['oid', 'name', 'type', 'template_oid']);
 
-  const invalidShape = (message: string): St2138ValidateResult => ({
-    ran: true,
-    ok: false,
-    exitCode: 2,
-    stdout: `ERROR: ${message}`,
-    stderr: '',
-    failingLine: null,
-    failingLines: [],
-    failingLineContent: []
-  });
-
   for (const item of items) {
     if (!item || typeof item !== 'object' || Array.isArray(item)) {
       results.push(invalidShape('ParamInfoResponse must be an object.'));
@@ -189,6 +185,80 @@ async function validateGrpcParamInfoResponse(payload: unknown): Promise<Response
   };
 }
 
+async function validatePushUpdates(payload: unknown, protocol: 'rest' | 'grpc'): Promise<ResponseValidation> {
+  const updates = Array.isArray(payload) ? payload : [payload];
+  const results: St2138ValidateResult[] = [];
+  const kinds = [
+    'value', 'device_component', 'refused', 'invalidated_external_object_id', 'trap_message',
+    'invalidate_device_model', 'external_object', 'remove_device_components', 'slots_added', 'slots_removed'
+  ];
+  const isRecord = (value: unknown): value is Record<string, unknown> =>
+    value !== null && typeof value === 'object' && !Array.isArray(value);
+  const hasOnly = (value: Record<string, unknown>, keys: string[]) =>
+    Object.keys(value).every(key => keys.includes(key));
+
+  for (const update of updates) {
+    if (!isRecord(update) || !hasOnly(update, ['slot', ...kinds])
+      || kinds.filter(kind => kind in update).length !== 1
+      || (protocol === 'rest' && !('slot' in update))) {
+      results.push(invalidShape('PushUpdates must contain a slot and exactly one recognized update.'));
+      continue;
+    }
+    results.push(await runSt2138ValidateResponse('slot', 'slot' in update ? update.slot : 0));
+    const kind = kinds.find(key => key in update)!;
+    const value = update[kind];
+    if (kind === 'value' || kind === 'external_object') {
+      const field = kind === 'value' ? 'value' : 'external_object';
+      if (!isRecord(value) || !hasOnly(value, ['oid', field]) || !('oid' in value) || !(field in value)) {
+        results.push(invalidShape(`${kind} must contain oid and ${field}.`));
+      } else {
+        results.push(await runSt2138ValidateResponse('fqoid', value.oid));
+        results.push(await runSt2138ValidateResponse(kind === 'value' ? 'value' : 'external_object_payload', value[field]));
+      }
+    } else if (kind === 'device_component') {
+      const componentKinds = ['device', 'param', 'shared_constraint', 'menu', 'command', 'language_pack'];
+      if (!isRecord(value) || !hasOnly(value, componentKinds)
+        || componentKinds.filter(key => key in value).length !== 1) {
+        results.push(invalidShape('device_component must contain exactly one recognized component.'));
+      } else {
+        results.push(...await validateDeviceComponentEvent(value, typeof update.slot === 'number' ? update.slot : 0));
+      }
+    } else if (kind === 'trap_message') {
+      if (!isRecord(value) || !hasOnly(value, ['type', 'trap_data'])
+        || ('trap_data' in value && (!Array.isArray(value.trap_data) || !value.trap_data.every(item => typeof item === 'string')))) {
+        results.push(invalidShape('trap_message must contain a valid type and string trap_data.'));
+      } else {
+        results.push(await runSt2138ValidateResponse('trap_message_type', 'type' in value ? value.type : 0));
+      }
+    } else if (kind === 'slots_added' || kind === 'slots_removed') {
+      results.push(await runSt2138ValidateResponse('slot_list', value));
+    } else if (kind === 'remove_device_components') {
+      if (isRecord(value) && Object.keys(value).length === 1) {
+        const [component, ids] = Object.entries(value)[0];
+        if (isRecord(ids) && hasOnly(ids, ['oids'])) {
+          results.push(await runSt2138ValidateResponse('push_remove_device_components', { [component]: ids.oids ?? [] }));
+        } else {
+          results.push(await runSt2138ValidateResponse('push_remove_device_components', value));
+        }
+      } else {
+        results.push(await runSt2138ValidateResponse('push_remove_device_components', value));
+      }
+    } else if (kind === 'refused') {
+      results.push(await runSt2138ValidateResponse('exception', value));
+    } else if (kind === 'invalidate_device_model') {
+      results.push(await runSt2138ValidateResponse('push_invalidate_device_model', { invalidate_device_model: value }));
+    } else if (typeof value !== 'string') {
+      results.push(invalidShape('invalidated_external_object_id must be a string.'));
+    }
+  }
+  const ok = results.every(result => result.ok);
+  return {
+    schema: 'PushUpdates field validation', ran: true, ok,
+    note: ok ? `${updates.length} update(s) passed field validation` : 'PushUpdates field validation failed',
+    results
+  };
+}
+
 export async function validateEndpointResponse(input: {
   protocol: 'rest' | 'grpc';
   method: string;
@@ -197,11 +267,19 @@ export async function validateEndpointResponse(input: {
   payload: unknown;
   isStream?: boolean;
 }): Promise<ResponseValidation> {
-  if (input.isStream && (input.payload === undefined || input.payload === null)) {
+  const successful = input.protocol === 'rest' ? input.status >= 200 && input.status < 300 : input.status === 0;
+  if (successful && input.isStream && (input.payload === undefined || input.payload === null)) {
     return { schema: null, ran: false, ok: true, note: 'The stream opened, but returned no event body to validate.', results: [] };
   }
-  if (input.isStream && Array.isArray(input.payload) && input.payload.length === 0) {
+  if (successful && input.isStream && Array.isArray(input.payload) && input.payload.length === 0) {
     return { schema: null, ran: false, ok: true, note: 'The stream opened, but returned no event body to validate.', results: [] };
+  }
+
+  if (successful && input.isStream && (
+    (input.protocol === 'rest' && /\/connect(?:\?|$)/.test(input.endpoint))
+    || (input.protocol === 'grpc' && input.method.replace(/^CatenaService\./, '') === 'Connect')
+  )) {
+    return validatePushUpdates(input.payload, input.protocol);
   }
 
   if (input.protocol === 'rest' && input.isStream && /\/\d+\/stream(?:\?|$)/.test(input.endpoint)) {

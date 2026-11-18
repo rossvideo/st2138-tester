@@ -1,6 +1,9 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const http = require('node:http');
+const http2 = require('node:http2');
+const fs = require('node:fs');
+const axios = require('axios');
 const grpc = require('@grpc/grpc-js');
 const protoLoader = require('@grpc/proto-loader');
 const path = require('node:path');
@@ -9,7 +12,7 @@ const { runEndpointAudit } = require('../src/openapi/endpoint-audit');
 const { executeEndpoint } = require('../src/openapi/endpoint-audit');
 const { runManualEndpoint } = require('../src/services/manual-endpoint');
 const { validateEndpointResponse } = require('../src/services/response-validation');
-const { scanRestDevice, grpcComponentsToDeviceModel, validateGrpcComponents } = require('../src/services/device-scan');
+const { scanRestDevice, scanGrpcDevice, grpcComponentsToDeviceModel, validateGrpcComponents } = require('../src/services/device-scan');
 const { executeDeviceCommand } = require('../src/services/command-execution');
 const { configureDeviceTransport } = require('../src/security/device-transport');
 
@@ -120,7 +123,6 @@ test('validates automatic endpoint responses and captures an SSE event', async (
   const invalidHealth = await executeEndpoint(responseClient, 'http://device.test/st2138-api/v1/health', {
     method: 'GET', isStream: false, pathTemplate: '/health'
   });
-
   assert.equal(invalidHealth.ok, false);
   assert.equal(invalidHealth.validation.schema, 'empty');
   assert.equal(invalidHealth.validation.ok, false);
@@ -139,11 +141,152 @@ test('validates automatic endpoint responses and captures an SSE event', async (
   const invalidStream = await executeEndpoint(streamClient, 'http://device.test/st2138-api/v1/1/stream', {
     method: 'GET', isStream: true, pathTemplate: '/{slot}/stream'
   });
-
   assert.equal(invalidStream.validation.schema, 'device_component');
   assert.equal(invalidStream.validation.ran, true);
   assert.equal(invalidStream.validation.ok, false);
 });
+
+test('Connect skips SSE heartbeats and validates actual update fields', async () => {
+    const client = {
+      defaults: { headers: {} },
+      async request() {
+        return {
+          status: 200, data: Readable.from([': keepalive\n\n', 'data: {"slot":0,"slots_added":{"slots":[0,1]}}\n\n']),
+          config: { headers: {} }, headers: { 'content-type': 'text/event-stream' }
+        };
+      }
+    };
+    const result = await executeEndpoint(client, 'http://device.test/st2138-api/v1/connect', {
+      method: 'GET', isStream: true, pathTemplate: '/connect'
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.validation.schema, 'PushUpdates field validation');
+    assert.match(result.responsePreview, /slots_added/);
+    for (const payload of [
+      { slot: 0, slots_added: { slots: [-1] } },
+      { slot: 0, value: { oid: 'counter', value: { int32_value: 1 } }, slots_added: { slots: [0] } },
+      { slot: 0, value: { oid: '?invalid', value: { int32_value: 1 } } },
+      { slot: null, slots_added: { slots: [0] } },
+      { slot: 0, device_component: { device: {}, param: {} } },
+      { slots_added: { slots: [0] } }
+    ]) {
+      const validation = await validateEndpointResponse({
+        protocol: 'rest', method: 'GET', endpoint: '/st2138-api/v1/connect',
+        status: 200, payload: [payload], isStream: true
+      });
+      assert.equal(validation.ok, false);
+    }
+    const grpcDefaultSlot = await validateEndpointResponse({
+      protocol: 'grpc', method: 'Connect', endpoint: 'CatenaService.Connect',
+      status: 0, payload: [{ slots_added: { slots: [0] } }], isStream: true
+    });
+    assert.equal(grpcDefaultSlot.ok, true);
+    const removed = await validateEndpointResponse({
+      protocol: 'grpc', method: 'Connect', endpoint: 'CatenaService.Connect',
+      status: 0, payload: [{ remove_device_components: { params: { oids: ['counter'] } } }], isStream: true
+    });
+    assert.equal(removed.ok, true);
+  });
+
+  test('REST Connect negotiates HTTP/2 and respects TLS and authorization settings', async context => {
+    const key = fs.readFileSync(path.join(__dirname, 'fixtures/test-device-key.pem'));
+    const cert = fs.readFileSync(path.join(__dirname, 'fixtures/test-device-cert.pem'));
+    const server = http2.createSecureServer({ key, cert, allowHTTP1: false });
+    const sessions = new Set();
+    server.on('session', session => { sessions.add(session); session.on('close', () => sessions.delete(session)); });
+    const authorizations = [];
+    server.on('stream', (stream, headers) => {
+      authorizations.push(headers.authorization);
+      stream.respond({ ':status': 200, 'content-type': 'text/event-stream' });
+      stream.write('data: {"slot":0,"slots_added":{"slots":[0]}}\n\n');
+    });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    context.after(() => {
+      configureDeviceTransport();
+      for (const session of sessions) session.destroy();
+      server.close();
+    });
+    const url = `https://127.0.0.1:${server.address().port}`;
+    const endpoint = '/st2138-api/v1/connect';
+    configureDeviceTransport();
+    const rejected = await runManualEndpoint({ protocol: 'rest', url, method: 'GET', endpoint, slot: null, isStream: true });
+    assert.equal(rejected.ok, false);
+    assert.match(rejected.error, /certificate/i);
+    configureDeviceTransport('synthetic.payload.signature', true);
+    const automatic = await executeEndpoint(axios.create({
+      ...require('../src/security/device-transport').restTransportOptions()
+    }), `${url}${endpoint}`, { method: 'GET', isStream: true, pathTemplate: '/connect' });
+    const manual = await runManualEndpoint({ protocol: 'rest', url, method: 'GET', endpoint, slot: null, isStream: true });
+    assert.equal(automatic.ok, true);
+    assert.equal(manual.ok, true);
+    assert.deepEqual(authorizations, ['Bearer synthetic.payload.signature', 'Bearer synthetic.payload.signature']);
+  });
+
+test('Connect rejects successful responses that are not event streams', async context => {
+  const server = http.createServer((request, response) => {
+    response.writeHead(200, { 'content-type': 'text/html' });
+    response.end('<html></html>');
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  context.after(() => server.close());
+  const url = `http://127.0.0.1:${server.address().port}`;
+  const endpoint = '/st2138-api/v1/connect';
+  const automatic = await executeEndpoint(axios.create(), `${url}${endpoint}`, {
+    method: 'GET', isStream: true, pathTemplate: '/connect'
+  });
+  const manual = await runManualEndpoint({ protocol: 'rest', url, method: 'GET', endpoint, slot: null, isStream: true });
+  assert.equal(automatic.ok, false);
+  assert.match(automatic.note, /text\/event-stream/);
+  assert.equal(manual.ok, false);
+  assert.match(manual.error, /text\/event-stream/);
+});
+
+  test('gRPC Connect is a bounded device-wide stream in manual and automatic tests', async context => {
+    const protoDirectory = path.resolve(__dirname, '../vendor/st2138-a/interface/proto');
+    const definition = protoLoader.loadSync(path.join(protoDirectory, 'service.proto'), {
+      includeDirs: [protoDirectory], keepCase: true, longs: String, enums: String, defaults: false, oneofs: false
+    });
+    const service = grpc.loadPackageDefinition(definition).st2138.CatenaService;
+    const server = new grpc.Server();
+    const requests = [];
+    server.addService(service.service, {
+      GetPopulatedSlots(call, callback) { callback(null, { slots: [0] }); },
+      DeviceRequest(call) { call.end(); },
+      Connect(call) {
+        requests.push(call.request);
+        if (call.request.user_agent === 'silent') {
+          call.sendMetadata(new grpc.Metadata());
+          return;
+        }
+        call.write({ slots_added: { slots: [0] } });
+      }
+    });
+    const port = await new Promise((resolve, reject) => server.bindAsync(
+      '127.0.0.1:0', grpc.ServerCredentials.createInsecure(),
+      (error, boundPort) => error ? reject(error) : resolve(boundPort)
+    ));
+    context.after(() => server.forceShutdown());
+    const url = `http://127.0.0.1:${port}`;
+    const manual = await runManualEndpoint({
+      protocol: 'grpc', url, method: 'READ', endpoint: 'CatenaService.Connect', slot: null, body: {}, isStream: false
+    });
+    assert.equal(manual.ok, true);
+    assert.deepEqual(manual.response, [{ slots_added: { slots: [0] } }]);
+    const report = await scanGrpcDevice(url);
+    const connects = report.endpointAudit.filter(endpoint => endpoint.endpoint === 'CatenaService.Connect');
+    assert.equal(connects.length, 1);
+    assert.equal(connects[0].slot, null);
+    assert.equal(connects[0].isStream, true);
+    assert.equal(connects[0].ok, true);
+    assert.deepEqual(requests, [{}, {}]);
+    const silent = await runManualEndpoint({
+      protocol: 'grpc', url, method: 'READ', endpoint: 'CatenaService.Connect',
+      slot: null, body: { user_agent: 'silent' }
+    });
+    assert.equal(silent.ok, true);
+    assert.equal(silent.validation.ran, false);
+    assert.match(silent.validation.note, /no event body/);
+  });
 
 test('validates a language list as one ST 2138 array response', async () => {
   const result = await validateEndpointResponse({

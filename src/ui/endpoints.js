@@ -67,6 +67,7 @@ export function bindEndpointRunner(getConnection) {
       const validation = result.validation;
       output.textContent = JSON.stringify({
         response: result.response,
+        ...(result.error ? { error: result.error } : {}),
         validation: validation ? {
           schema: validation.schema,
           ran: validation.ran,

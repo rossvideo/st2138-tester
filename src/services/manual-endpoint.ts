@@ -5,7 +5,7 @@ import path from 'path';
 import { validateEndpointResponse } from './response-validation';
 import { grpcComponentsToDeviceModel, validateGrpcComponents } from './device-scan';
 import { runSt2138ValidateJsOnModel, St2138ValidateResult } from '../validation/st2138-cli-validator';
-import { restTransportOptions, grpcTransport, streamCollector, grpcDeadline, DEVICE_REQUEST_TIMEOUT_MS } from '../security/device-transport';
+import { restTransportOptions, connectStreamTransportOptions, grpcTransport, streamCollector, grpcDeadline, captureGrpcConnect, DEVICE_REQUEST_TIMEOUT_MS } from '../security/device-transport';
 
 type ManualEndpointRequest = {
   protocol: 'rest' | 'grpc';
@@ -115,8 +115,14 @@ export async function runManualEndpoint(input: ManualEndpointRequest & { request
         data: input.body,
         timeout: DEVICE_REQUEST_TIMEOUT_MS,
         responseType: input.isStream ? 'stream' : 'json',
+        ...(input.isStream && /\/connect(?:\?|$)/.test(input.endpoint) ? await connectStreamTransportOptions(requestUrl) : {}),
         validateStatus: () => true
       });
+      if (input.isStream && /\/connect(?:\?|$)/.test(input.endpoint) && response.status >= 200 && response.status < 300
+        && !/^text\/event-stream(?:\s*;|$)/i.test(String(response.headers['content-type'] || ''))) {
+        response.data.destroy();
+        throw new Error('Connect response must use the text/event-stream content type.');
+      }
       const payload = input.isStream ? await captureSse(response.data) : response.data;
       const validation = await validateEndpointResponse({
         protocol: 'rest', method, endpoint: input.endpoint, status: response.status, payload, isStream: input.isStream
@@ -158,18 +164,19 @@ export async function runManualEndpoint(input: ManualEndpointRequest & { request
     : { ...(parsedRequest && typeof parsedRequest === 'object' && !Array.isArray(parsedRequest) ? parsedRequest : {}), slot: input.slot };
 
   try {
-    const payload = input.isStream
-      ? await callStream(client, rpcMethod, request)
+    const isStream = Boolean(Service.service[rpcMethod].responseStream);
+    const payload = isStream
+      ? rpcMethod === 'Connect' ? await captureGrpcConnect(client, request) : await callStream(client, rpcMethod, request)
       : await callUnary(client, rpcMethod, request);
     let validation;
-    if (rpcMethod === 'DeviceRequest' && input.isStream) {
+    if (rpcMethod === 'DeviceRequest' && isStream) {
       const deviceValidation = await runSt2138ValidateJsOnModel(
         grpcComponentsToDeviceModel(Number((request as any).slot), payload as any[])
       );
       validation = await validateGrpcComponents(payload as any[], deviceValidation);
     } else {
       validation = await validateEndpointResponse({
-        protocol: 'grpc', method: rpcMethod, endpoint: input.endpoint, status: 0, payload, isStream: input.isStream
+        protocol: 'grpc', method: rpcMethod, endpoint: input.endpoint, status: 0, payload, isStream
       });
     }
     return {

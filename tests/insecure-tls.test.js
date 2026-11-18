@@ -5,7 +5,7 @@ const path = require('node:path');
 const https = require('node:https');
 const axios = require('axios');
 const grpc = require('@grpc/grpc-js');
-const { configureDeviceTransport, restTransportOptions, grpcTransport } = require('../src/security/device-transport');
+const { configureDeviceTransport, restTransportOptions, grpcTransport, connectStreamTransportOptions } = require('../src/security/device-transport');
 
 test('invalid device certificates fail by default and work only with explicit opt-in for REST and gRPC', async context => {
   context.after(() => configureDeviceTransport());
@@ -17,8 +17,10 @@ test('invalid device certificates fail by default and work only with explicit op
   const url = `https://127.0.0.1:${server.address().port}`;
   configureDeviceTransport();
   await assert.rejects(axios.get(url, { ...restTransportOptions(), timeout: 3000 }), /certificate/);
+  await assert.rejects(connectStreamTransportOptions(url), /certificate/);
   configureDeviceTransport('synthetic.payload.signature', true);
   assert.equal((await axios.get(url, { ...restTransportOptions(), timeout: 3000 })).data, 'ok');
+  assert.equal((await connectStreamTransportOptions(url)).httpVersion, 1);
 
   const rpcServer = new grpc.Server();
   const identity = value => value;

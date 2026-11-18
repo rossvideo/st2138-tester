@@ -1,5 +1,7 @@
 import * as grpc from '@grpc/grpc-js';
 import { Agent } from 'https';
+import { isIP } from 'net';
+import { connect as connectTls } from 'tls';
 
 let deviceJwt: string | undefined;
 let allowInsecureTls = false;
@@ -42,6 +44,34 @@ export function restTransportOptions() {
   };
 }
 
+export async function connectStreamTransportOptions(url: string): Promise<{
+  httpVersion: 1 | 2;
+  http2Options?: { rejectUnauthorized: boolean };
+}> {
+  const parsed = new URL(url);
+  if (parsed.protocol !== 'https:') return { httpVersion: 1 };
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, '');
+  const httpVersion = await new Promise<1 | 2>((resolve, reject) => {
+    const socket = connectTls({
+      host: hostname,
+      port: Number(parsed.port || 443),
+      ...(isIP(hostname) ? {} : { servername: hostname }),
+      rejectUnauthorized: !allowInsecureTls,
+      ALPNProtocols: ['h2', 'http/1.1']
+    });
+    socket.setTimeout(5000, () => socket.destroy(new Error('TLS protocol negotiation timed out.')));
+    socket.once('secureConnect', () => {
+      const version = socket.alpnProtocol === 'h2' ? 2 : 1;
+      socket.destroy();
+      resolve(version);
+    });
+    socket.once('error', reject);
+  });
+  return httpVersion === 2
+    ? { httpVersion, http2Options: { rejectUnauthorized: !allowInsecureTls } }
+    : { httpVersion };
+}
+
 export function grpcTransport(target: string, secure = false) {
   const token = deviceJwt;
   const options = {
@@ -65,6 +95,37 @@ export function streamCollector(values: unknown[]): (value: unknown) => void {
   return value => {
     values.push(value);
   };
+}
+
+export function captureGrpcConnect(client: any, request: unknown): Promise<unknown[]> {
+  return new Promise((resolve, reject) => {
+    const stream = client.Connect(request, { deadline: grpcDeadline() });
+    let opened = false;
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      stream.cancel();
+      if (opened) resolve([]);
+      else reject(new Error('Connect timed out before the stream opened.'));
+    }, 5000);
+    const finish = (values: unknown[]) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      stream.cancel();
+      resolve(values);
+    };
+    stream.on('metadata', () => { opened = true; });
+    stream.on('data', (value: unknown) => finish([value]));
+    stream.on('end', () => finish([]));
+    stream.on('error', (error: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
+    });
+  });
 }
 
 export function assertValidSlots(slots: number[]): void {
