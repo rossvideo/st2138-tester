@@ -191,14 +191,14 @@ test('Connect skips SSE heartbeats and validates actual update fields', async ()
       method: 'GET', isStream: true, pathTemplate: '/connect'
     });
     assert.equal(result.ok, true);
-    assert.equal(result.validation.schema, 'PushUpdates field validation');
+    assert.equal(result.validation.schema, 'push_updates');
     assert.match(result.responsePreview, /slots_added/);
-    assert.match(result.validation.results[0].stdout,
-      /Applying tester rule 'push_updates' to streamed update 1\nShape check passed\./);
+    assert.match(result.validation.results[0].stdout, /Applying schema 'push_updates' to response/);
     for (const payload of [
       { slot: 0, slots_added: { slots: [-1] } },
       { slot: 0, value: { oid: 'counter', value: { int32_value: 1 } }, slots_added: { slots: [0] } },
       { slot: 0, value: { oid: '?invalid', value: { int32_value: 1 } } },
+      { slot: 0, value: { oid: 'counter', value: { unknown: 1 } } },
       { slot: null, slots_added: { slots: [0] } },
       { slot: 0, device_component: { device: {}, param: {} } },
       { slots_added: { slots: [0] } }
@@ -214,12 +214,17 @@ test('Connect skips SSE heartbeats and validates actual update fields', async ()
       status: 0, payload: [{ slots_added: { slots: [0] } }], isStream: true
     });
     assert.equal(grpcDefaultSlot.ok, true);
-    assert.match(grpcDefaultSlot.results[0].stdout, /Applying tester rule 'PushUpdates' to streamed update 1/);
+    assert.match(grpcDefaultSlot.results[0].stdout, /Applying schema 'push_updates' to response/);
     const removed = await validateEndpointResponse({
       protocol: 'grpc', method: 'Connect', endpoint: 'CatenaService.Connect',
       status: 0, payload: [{ remove_device_components: { params: { oids: ['counter'] } } }], isStream: true
     });
     assert.equal(removed.ok, true);
+    const invalidRemoved = await validateEndpointResponse({
+      protocol: 'grpc', method: 'Connect', endpoint: 'CatenaService.Connect',
+      status: 0, payload: [{ remove_device_components: { params: { oids: ['invalid/'] } } }], isStream: true
+    });
+    assert.equal(invalidRemoved.ok, false);
   });
 
 test('Connect diagnostics identify each streamed update and its shape result', async () => {
@@ -237,7 +242,7 @@ test('Connect diagnostics identify each streamed update and its shape result', a
   assert.doesNotMatch(chunks[0].result, /submember/);
   assert.deepEqual(chunks[0].submembers.map(check => check.member), ['slot', 'value', 'value.oid', 'value.value']);
   assert.match(chunks[0].submembers[2].result, /Applying schema "fqoid" to submember value\.oid\n✅ Passed$/);
-  assert.match(chunks[1].result, /response chunk 2\n❌ Failed$/);
+  assert.match(chunks[1].result, /response chunk 2\n❌ Failed\nERROR:/);
   assert.match(chunks[1].submembers[1].result, /Applying schema "slot_list" to submember slots_added\n❌ Failed\nERROR:/);
   assert.deepEqual(chunks[2].submembers, []);
   const diagnostics = validationDiagnostics(validation);
@@ -405,7 +410,7 @@ test('shows compact validator checks and failure diagnostics in both report view
   }
 });
 
-test('uses the protobuf ParamInfo shape for gRPC but the OpenAPI schema for REST', async () => {
+test('validates ParamInfo responses for gRPC and REST', async () => {
   const protobufResponse = {
     info: {
       oid: 'audio/meter',
@@ -429,9 +434,14 @@ test('uses the protobuf ParamInfo shape for gRPC but the OpenAPI schema for REST
   assert.match(diagnostics, /Applying tester rule "ParamInfoResponse shape" to response\n✅ Passed/);
   assert.match(diagnostics, /Applying schema "fqoid" to response\n✅ Passed/);
   assert.doesNotMatch(diagnostics, /An object with only info|Schema validation succeeded/);
-  assert.equal(restResult.ok, false);
+  assert.equal(restResult.ok, true);
   assert.equal(restResult.schema, 'param_info_response');
-  assert.match(restResult.results[0].stdout, /required property 'param'/);
+  const invalidRest = await validateEndpointResponse({
+    protocol: 'rest', method: 'GET', endpoint: '/st2138-api/v1/1/param-info/audio/meter',
+    status: 200, payload: { info: { oid: 'audio/meter' } }
+  });
+  assert.equal(invalidRest.ok, false);
+  assert.match(invalidRest.results[0].stdout, /required property 'type'/);
 });
 
 test('runs a manual gRPC endpoint and validates its response', async (context) => {

@@ -60,20 +60,18 @@ confirmation.
 
 Connect is checked as a long-lived stream: the scan captures an initial update
 and closes the connection, or reports that no update was available. HTTPS REST
-Connect uses HTTP/2 when the server supports it. Connect updates receive field
-validation rather than full `push_updates` schema validation because the
-vendored schema does not match the protobuf update representation.
+Connect uses HTTP/2 when the server supports it. Connect updates are validated
+against the vendored `push_updates` schema and checked by submember.
 
-Read Param responses are validated directly against `component_param`. Schema
-generation restores its missing object type (misplaced in the vendored YAML
-description); its other constraints, including `simple_oid`, are unchanged.
+Read Param responses are validated directly against `component_param`, including
+its `simple_oid` constraint.
 
 The report includes schema results, parameter and endpoint checks, response
 validation details, and device metadata. Expand **Validator details** to see
 the schema or tester rule name, its result, and any warnings or errors, without
 the full definition. Manual endpoint and command responses use the same style.
-Connect groups checks into one compact block per streamed chunk, with the result for `push_updates` (REST) or
-`PushUpdates` (gRPC) followed by separately spaced and indented submember
+Connect groups checks into one compact block per streamed chunk, with the result
+for `push_updates` followed by separately spaced and indented submember
 checks. Manual Connect results instead list those checks as separate entries in
 each chunk's `submembers` array. Reports and device payloads stay in the browser for the current run;
 they are not saved as server-side history.

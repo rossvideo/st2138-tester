@@ -179,16 +179,21 @@ async function validatePushUpdates(payload: unknown, protocol: 'rest' | 'grpc'):
     value !== null && typeof value === 'object' && !Array.isArray(value);
   const hasOnly = (value: Record<string, unknown>, keys: string[]) =>
     Object.keys(value).every(key => keys.includes(key));
-  const ruleName = protocol === 'rest' ? 'push_updates' : 'PushUpdates';
-  const updateRule = `An object with ${protocol === 'rest' ? 'a required slot' : 'an optional slot (defaults to 0)'} and exactly one of: ${kinds.join(', ')}. No other fields are allowed. Validate slot and the selected update separately.`;
-
   for (const [index, update] of updates.entries()) {
     const target = `streamed update ${index + 1}`;
     const updateOk = isRecord(update) && hasOnly(update, ['slot', ...kinds])
       && kinds.filter(kind => kind in update).length === 1
       && (protocol === 'grpc' || 'slot' in update);
-    results.push({ ...shapeCheck(ruleName, updateRule, updateOk,
-      'PushUpdates must contain exactly one recognized update and, for REST, a slot.', target), chunk: index + 1 });
+    let schemaPayload = update;
+    if (protocol === 'grpc' && isRecord(update)) {
+      schemaPayload = {
+        ...update,
+        ...(!('slot' in update) ? { slot: 0 } : {}),
+        ...(isRecord(update.trap_message) && !('type' in update.trap_message)
+          ? { trap_message: { ...update.trap_message, type: 0 } } : {})
+      };
+    }
+    results.push({ ...await runSt2138ValidateResponse('push_updates', schemaPayload), chunk: index + 1 });
     if (!updateOk) continue;
     const kind = kinds.find(key => key in update)!;
     const value = update[kind];
@@ -230,16 +235,7 @@ async function validatePushUpdates(payload: unknown, protocol: 'rest' | 'grpc'):
     } else if (kind === 'slots_added' || kind === 'slots_removed') {
       await checkSchema('slot_list', value);
     } else if (kind === 'remove_device_components') {
-      if (isRecord(value) && Object.keys(value).length === 1) {
-        const [component, ids] = Object.entries(value)[0];
-        if (isRecord(ids) && hasOnly(ids, ['oids'])) {
-          await checkSchema('push_remove_device_components', { [component]: ids.oids ?? [] });
-        } else {
-          await checkSchema('push_remove_device_components', value);
-        }
-      } else {
-        await checkSchema('push_remove_device_components', value);
-      }
+      await checkSchema('push_remove_device_components', { remove_device_components: value });
     } else if (kind === 'refused') {
       await checkSchema('exception', value);
     } else if (kind === 'invalidate_device_model') {
@@ -251,8 +247,8 @@ async function validatePushUpdates(payload: unknown, protocol: 'rest' | 'grpc'):
   }
   const ok = results.every(result => result.ok);
   return {
-    schema: 'PushUpdates field validation', ran: true, ok,
-    note: ok ? `${updates.length} update(s) passed field validation` : 'PushUpdates field validation failed',
+    schema: 'push_updates', ran: true, ok,
+    note: ok ? `${updates.length} update(s) validated` : 'PushUpdates validation failed',
     results
   };
 }
