@@ -510,6 +510,33 @@ test('shows compact validator checks and failure diagnostics in both report view
   }
 });
 
+test('reports passing devices separately from a failing node-wide endpoint', t => {
+  const elements = new Map();
+  const previous = globalThis.document;
+  globalThis.document = {
+    getElementById(id) {
+      if (!elements.has(id)) elements.set(id, {});
+      return elements.get(id);
+    }
+  };
+  t.after(() => { globalThis.document = previous; });
+  renderReport({
+    protocol: 'rest', deviceUrl: 'http://node.test', scannedAt: new Date().toISOString(),
+    summary: { total: 1, passed: 1, failed: 0 },
+    slots: [{ slot: 2, ok: true, model: { params: { product: { params: {
+      name: { value: { string_value: 'Audio Mixer' } }
+    } } } } }],
+    endpointAudit: [
+      { endpoint: '/health', pathTemplate: '/health', slot: null, method: 'GET', tested: true, ok: false },
+      { endpoint: '/2/param-info/stream', pathTemplate: '/{slot}/param-info/stream', slot: 2, method: 'GET', tested: true, ok: true }
+    ]
+  });
+  assert.equal(elements.get('scanOutcome').textContent, '1 of 1 device passed');
+  assert.equal(elements.get('deviceEndpointSummary').textContent, '0 of 1 passed · 1 failed');
+  assert.match(elements.get('slotResults').innerHTML, /Slot 2 · Audio Mixer/);
+  assert.match(elements.get('endpointAudit').innerHTML, /Node-wide endpoints/);
+});
+
 test('nests recursive REST and gRPC checks under one stream card per target', t => {
   const elements = new Map();
   const previous = globalThis.document;

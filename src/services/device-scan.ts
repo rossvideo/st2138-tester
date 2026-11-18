@@ -49,7 +49,7 @@ function normalizeDeviceUrl(rawUrl: string): string {
   const parsed = new URL(candidate);
 
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new Error('The device URL must use HTTP or HTTPS.');
+    throw new Error('The node URL must use HTTP or HTTPS.');
   }
 
   return parsed.toString().replace(/\/+$/, '');
@@ -491,7 +491,7 @@ export async function scanRestDevice(rawUrl: string, specOverride?: OpenApiSpecI
     }
     return undefined;
   };
-  onProgress?.('Auditing device-wide REST endpoints…');
+  onProgress?.('Auditing node-wide REST endpoints…');
   const endpointAudit = await runEndpointAudit(client, deviceEndpoints, {
     deviceUrl,
     apiPrefix: spec.apiPrefix,

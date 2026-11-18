@@ -11,7 +11,7 @@ export function createScanRoutes(access: ReturnType<typeof createLocalAccess>) {
     const input = req.body;
     if (!input || typeof input !== 'object' || Array.isArray(input)
       || typeof input.url !== 'string' || !input.url.trim() || input.url.length > 2048) {
-      res.status(400).json({ message: 'A valid device URL is required.' });
+      res.status(400).json({ message: 'A valid Catena node URL is required.' });
       return;
     }
     if (input.allowInsecureTls !== undefined && typeof input.allowInsecureTls !== 'boolean') {

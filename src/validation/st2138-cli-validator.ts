@@ -13,7 +13,7 @@ import YAML from 'yaml';
 // `__dirname` resolves to `<root>/src/validation` (ts-node) or
 // `<root>/dist/validation` (compiled); both sit two levels below the repo root
 // where `vendor/` lives. Overridable via env for non-standard layouts.
-const SUBMODULE_ROOT =
+export const SUBMODULE_ROOT =
   process.env.ST2138_SUBMODULE_ROOT || path.join(__dirname, '..', '..', 'vendor', 'st2138-a');
 const TOOLS_DIR = path.join(SUBMODULE_ROOT, 'tools');
 const DEVICE_SCHEMA_YAML = path.join(SUBMODULE_ROOT, 'interface', 'schema', 'device.yaml');

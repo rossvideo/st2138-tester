@@ -1,6 +1,8 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const http = require('node:http');
+const { readFileSync } = require('node:fs');
+const path = require('node:path');
 const { app } = require('../src/server');
 
 test('all routes share the exact 10,000 requests per minute limit before doing work',
@@ -35,6 +37,7 @@ test('all routes share the exact 10,000 requests per minute limit before doing w
       ['/', {}, 200],
       ['/app.js', {}, 200],
       ['/health', {}, 200],
+      ['/st2138-version', {}, 200],
       ['/missing', {}, 404],
       ...['scan/rest', 'scan/grpc', 'command', 'endpoint/run'].map(endpoint => [
         `/api/v2/${endpoint}`,
@@ -42,9 +45,14 @@ test('all routes share the exact 10,000 requests per minute limit before doing w
         400
       ])
     ];
-    for (const [path, options, status] of routes) {
-      const response = await request(path, options);
-      assert.equal(response.status, status, path);
+    for (const [route, options, status] of routes) {
+      const response = await request(route, options);
+      assert.equal(response.status, status, route);
+      if (route === '/') assert.match(response.body, /Leave no node<br> <em>untested\.<\/em>/);
+      if (route === '/st2138-version') {
+        const submoduleRoot = process.env.ST2138_SUBMODULE_ROOT || path.join(__dirname, '../vendor/st2138-a');
+        assert.equal(response.body.trim(), readFileSync(path.join(submoduleRoot, 'VERSION'), 'utf8').trim());
+      }
     }
 
     for (let count = routes.length; count < 10000; count++) {

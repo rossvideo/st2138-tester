@@ -106,7 +106,7 @@ function slotResultMarkup(slot, slotEndpoints) {
   const apiSummary = `<span class="${apiCounts.failed ? 'fail-text' : 'pass-text'}">${apiCounts.passed} passed · ${apiCounts.failed} failed · ${apiCounts.skipped} not run</span>`;
   return `<article class="slot-result ${slot.ok ? 'pass' : 'fail'}">
     <span class="result-marker" aria-hidden="true">${slot.ok ? '✓' : '!'}</span>
-    <div class="result-main"><div class="result-title-row"><h3>Slot ${escapeHtml(slot.slot)}</h3><span class="result-state">${slot.ok ? 'PASSED' : 'FAILED'}</span></div>
+    <div class="result-main"><div class="result-title-row"><h3>${escapeHtml(slotDeviceTitle(slot))}</h3><span class="result-state">${slot.ok ? 'PASSED' : 'FAILED'}</span></div>
       <p>${slot.fetched ? 'Device model retrieved and checked.' : 'Device model could not be retrieved.'}</p>
       <section class="diagnostic-details"><h4>Validation details</h4><div class="diagnostic-content">
         ${validationMarkup(validation)}
@@ -145,11 +145,18 @@ function unwrapProductValue(value) {
 function slotProductSummary(slot) {
   const product = slot.model?.params?.product;
   const get = (key) => unwrapProductValue(product?.params?.[key]?.value ?? product?.value?.struct_value?.fields?.[key]);
+  const name = get('name');
   return {
-    product: `${get('vendor') || 'Unknown vendor'}'s ${get('name') || 'Unnamed device'}`,
+    name,
+    product: `${get('vendor') || 'Unknown vendor'}'s ${name || 'Unnamed device'}`,
     version: get('version') || '—',
     serial: get('serial_number') || '—'
   };
+}
+
+function slotDeviceTitle(slot) {
+  const { name } = slotProductSummary(slot);
+  return name ? `Slot ${slot.slot} · ${name}` : `Slot ${slot.slot}`;
 }
 
 function endpointMarkup(endpoint, variant = false) {
@@ -259,7 +266,7 @@ function scopeGroupMarkup(title, entries) {
     byType.set(entry.memberType, group);
   }
   return `<details class="endpoint-scope-group" open><summary><span>${escapeHtml(title)}</span>${endpointCountsMarkup(entries)}</summary><div class="endpoint-scope-content">
-    ${general.length ? `<section class="endpoint-general-group"><h3>Device API</h3><div class="endpoint-general-list">${endpointListMarkup(general)}</div></section>` : ''}
+    ${general.length ? `<section class="endpoint-general-group"><h3>Core endpoints</h3><div class="endpoint-general-list">${endpointListMarkup(general)}</div></section>` : ''}
     ${subscriptionEntries.length ? resourceGroupMarkup('Subscriptions', subscriptionEntries) : ''}
     ${languageEntries.length ? languagePackGroupMarkup(languageEntries) : ''}
     ${Array.from(byType, ([type, typeEntries]) => memberTypeMarkup(type, typeEntries)).join('')}
@@ -287,7 +294,6 @@ export function renderReport(report, requestedUrl = report.deviceUrl) {
   const target = /^https?:\/\//i.test(requestedUrl) ? requestedUrl : `https://${requestedUrl}`;
   const reportUrl = new URL(target);
   const fullUrl = `${reportUrl.protocol}//${reportUrl.host}${reportUrl.pathname === '/' ? '' : reportUrl.pathname}${reportUrl.search}`;
-//   document.getElementById('reportTitle').textContent = reportUrl.hostname;
   document.getElementById('reportEndpoint').textContent = fullUrl;
   document.getElementById('totalCount').textContent = summary.total;
   document.getElementById('passedCount').textContent = summary.passed;
@@ -296,8 +302,10 @@ export function renderReport(report, requestedUrl = report.deviceUrl) {
   document.getElementById('scanTime').textContent = `Completed ${new Date(report.scannedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
 
   const outcome = document.getElementById('scanOutcome');
-  outcome.textContent = summary.failed === 0 ? 'ALL SLOTS PASSED' : `${summary.failed} SLOT${summary.failed === 1 ? '' : 'S'} NEED REVIEW`;
-  outcome.className = `outcome-tag ${summary.failed === 0 ? 'is-pass' : 'is-fail'}`;
+  outcome.textContent = summary.total
+    ? `${summary.passed} of ${summary.total} ${summary.total === 1 ? 'device' : 'devices'} passed`
+    : 'No devices scanned';
+  outcome.className = `outcome-tag${summary.total ? (summary.failed ? ' is-fail' : ' is-pass') : ''}`;
   const endpointAudit = (report.endpointAudit || []).map((endpoint) => ({ ...endpoint, protocol: report.protocol }));
   const schemaResults = slots
     .map((slot) => slot.validation || slot.componentValidation)
@@ -321,8 +329,16 @@ export function renderReport(report, requestedUrl = report.deviceUrl) {
   document.getElementById('deviceModels').innerHTML = slots.map(modelMarkup).join('');
 
   const endpointSummary = report.summary.endpoints || { tested: 0, passed: 0, failed: 0, skipped: 0 };
-  const deviceEndpoints = endpointAudit.filter((endpoint) => endpoint.slot === null);
-  document.getElementById('deviceEndpointSummary').innerHTML = endpointCountsMarkup(deviceEndpoints);
+  const nodeEndpoints = endpointAudit.filter((endpoint) => endpoint.slot === null);
+  const nodeCounts = endpointTotals(nodeEndpoints);
+  const nodeTested = nodeCounts.passed + nodeCounts.failed;
+  const nodeSummary = document.getElementById('deviceEndpointSummary');
+  nodeSummary.textContent = [
+    nodeTested ? `${nodeCounts.passed} of ${nodeTested} passed` : 'No checks run',
+    ...(nodeCounts.failed ? [`${nodeCounts.failed} failed`] : []),
+    ...(nodeCounts.skipped ? [`${nodeCounts.skipped} not run`] : [])
+  ].join(' · ');
+  nodeSummary.className = nodeCounts.failed ? 'fail-text' : '';
   document.getElementById('slotEndpointSummary').innerHTML = slots.map((slot) => {
     const entries = endpointAudit.filter((endpoint) => endpoint.slot === slot.slot);
     const counts = slot.endpointSummary || endpointTotals(entries);
@@ -336,13 +352,12 @@ export function renderReport(report, requestedUrl = report.deviceUrl) {
   const endpointTag = document.getElementById('endpointAuditSummary');
   endpointTag.textContent = `${endpointSummary.passed} passed · ${endpointSummary.failed} failed · ${endpointSummary.skipped} not run`;
   endpointTag.className = `outcome-tag ${endpointSummary.failed === 0 ? 'is-pass' : 'is-fail'}`;
-  const deviceGroup = endpointAudit.filter((endpoint) => endpoint.slot === null);
-  const slotGroups = slots.map((slot) => ({ title: `Slot ${slot.slot}`, entries: endpointAudit.filter((endpoint) => endpoint.slot === slot.slot) }));
+  const slotGroups = slots.map((slot) => ({ title: slotDeviceTitle(slot), entries: endpointAudit.filter((endpoint) => endpoint.slot === slot.slot) }));
   document.getElementById('endpointAudit').innerHTML = [
-    ...(deviceGroup.length ? [scopeGroupMarkup('Device-wide', deviceGroup)] : []),
+    ...(nodeEndpoints.length ? [scopeGroupMarkup('Node-wide endpoints', nodeEndpoints)] : []),
     ...slotGroups.filter((group) => group.entries.length).map((group) => scopeGroupMarkup(group.title, group.entries))
   ].join('') || '<p class="quiet-text">No endpoint checks were returned.</p>';
 
   const commandGroups = slots.map(commandSlotMarkup).filter(Boolean);
-  document.getElementById('commandGroups').innerHTML = commandGroups.length ? commandGroups.join('') : '<p class="quiet-text">No commands are advertised by this device.</p>';
+  document.getElementById('commandGroups').innerHTML = commandGroups.length ? commandGroups.join('') : '<p class="quiet-text">No devices on this node advertise commands.</p>';
 }

@@ -20,7 +20,7 @@
         <span id="connectionLed" class="connection-led" role="img" aria-label="Connected"></span>
         <span id="connectedHost" class="connection-host"></span>
         <span id="connectedProtocol" class="protocol-tag"></span>
-        <button id="changeDeviceButton" class="quiet-button" type="button">Change device</button>
+        <button id="changeDeviceButton" class="quiet-button" type="button">Change node</button>
       </div>
       <nav class="topbar-links" aria-label="Project links">
         <a href="https://github.com/SMPTE/st2138-a/tree/main/docs" target="_blank" rel="noreferrer">Docs</a>
@@ -31,12 +31,12 @@
     <main>
       <section id="connectView" class="connect-view">
         <div class="connect-copy">
-          <p class="eyebrow"><span class="eyebrow-rule"></span> DEVICE CONFORMANCE</p>
-          <h1>Test the<br><em>whole device.</em></h1>
-          <p class="connect-deck">Connect to a Catena endpoint and inspect every populated slot against the ST 2138 validator.</p>
+          <p class="eyebrow"><span class="eyebrow-rule"></span> <span id="st2138Version">ST2138</span></p>
+          <h1>Leave no node<br> <em>untested.</em></h1>
+          <p class="connect-deck">Connect to a Catena node to check its shared endpoints and validate each device by slot.</p>
           <div class="connect-stamp" aria-hidden="true">
             <span>REST</span><span class="stamp-cross">+</span><span>gRPC</span>
-            <span class="stamp-sub">ONE DEVICE AT A TIME</span>
+            <span class="stamp-sub">ONE NODE AT A TIME</span>
           </div>
         </div>
 
@@ -44,14 +44,14 @@
           <form id="connectionForm" novalidate>
             <div class="form-heading">
               <p class="eyebrow">NEW TEST SESSION</p>
-              <h2>Connect a device</h2>
+              <h2>Connect to a node</h2>
             </div>
 
-            <label class="field-label" for="deviceUrl">Device base URL</label>
+            <label class="field-label" for="deviceUrl">Catena node URL</label>
             <div class="url-field">
               <span class="url-prefix" aria-hidden="true">↗</span>
               <input id="deviceUrl" name="deviceUrl" type="text" inputmode="url" autocomplete="url"
-                placeholder="https://device.example.com" required>
+                placeholder="https://node.example.com" required>
             </div>
 
             <div class="connection-options">
@@ -65,9 +65,9 @@
               </label>
             </div>
             <p id="insecureTlsWarning" class="tls-warning" role="status" hidden>
-              Warning: HTTPS certificate verification is disabled for this device's REST/gRPC scans and
-              follow-up operations. An impersonated device could receive your JWT and commands.
-              Use only trusted test devices. TLS encryption remains enabled.
+              Warning: HTTPS certificate verification is disabled for this node's REST/gRPC scans and
+              follow-up operations. An impersonator could receive your JWT and commands.
+              Use only trusted test nodes. TLS encryption remains enabled.
             </p>
             <div id="jwtField" class="jwt-field" hidden>
               <label class="field-label" for="jwtToken">JWT token</label>
@@ -84,7 +84,7 @@
             </fieldset>
 
             <button id="scanButton" class="primary-button" type="submit">
-              <span>Start scan</span><span aria-hidden="true">↗</span>
+              <span>Scan node</span><span aria-hidden="true">↗</span>
             </button>
             <p id="connectionStatus" class="connection-status" role="status" aria-live="polite"></p>
           </form>
@@ -96,28 +96,28 @@
         <div class="workspace-heading">
           <div>
             <p class="eyebrow"><span class="eyebrow-rule"></span> TEST YOUR CATENA</p>
-            <h1 id="reportTitle">Device Report</h1>
+            <h1 id="reportTitle">Node scan results</h1>
             <p class="scan-target"><span id="reportEndpoint"></span></p>
             <p id="scanTime" class="scan-timestamp"></p>
           </div>
-          <button id="rescanButton" class="outline-button" type="button">Run scan again <span aria-hidden="true">↻</span></button>
+          <button id="rescanButton" class="outline-button" type="button">Rescan node <span aria-hidden="true">↻</span></button>
         </div>
 
         <section class="overview-strip" aria-label="Scan overview">
-          <div class="overview-item"><span class="overview-label">SLOTS SCANNED</span><strong id="totalCount">0</strong></div>
+          <div class="overview-item"><span class="overview-label">DEVICES SCANNED</span><strong id="totalCount">0</strong></div>
           <div class="overview-item"><span class="overview-label">PARAMETER CHECKS</span><strong id="apiCheckCount">0</strong></div>
           <div class="overview-item overview-tests"><span class="overview-label">ALL TESTS</span><strong><span id="allTestsPassedPercent">—</span> pass</strong><small id="allTestsFailedPercent" class="overview-test-breakdown">— fail · 0 passed / 0 failed</small></div>
-          <div class="overview-item overview-pass"><span class="overview-label">SLOTS PASSED</span><strong id="passedCount">0</strong></div>
-          <div class="overview-item overview-fail"><span class="overview-label">SLOTS FAILED</span><strong id="failedCount">0</strong></div>
+          <div class="overview-item overview-pass"><span class="overview-label">DEVICES PASSED</span><strong id="passedCount">0</strong></div>
+          <div class="overview-item overview-fail"><span class="overview-label">DEVICES FAILED</span><strong id="failedCount">0</strong></div>
         </section>
 
         <section class="endpoint-overview" aria-label="Endpoint summary">
           <div class="device-endpoint-summary">
-            <span class="overview-label">DEVICE-WIDE ENDPOINTS</span>
-            <strong id="deviceEndpointSummary">0 passed · 0 failed</strong>
+            <span class="overview-label">NODE-WIDE ENDPOINTS</span>
+            <strong id="deviceEndpointSummary">No checks run</strong>
           </div>
           <div class="slot-endpoint-heading">
-            <span class="overview-label">SLOT SUMMARY</span>
+            <span class="overview-label">DEVICES BY SLOT</span>
             <div class="slot-summary-columns" aria-hidden="true"><span>SLOT</span><span>PRODUCT</span><span>VERSION</span><span>SERIAL NUMBER</span><span>SCHEMA</span><span>PASSED</span><span>FAILED</span></div>
           </div>
           <div id="slotEndpointSummary" class="slot-endpoint-summary"></div>
@@ -132,7 +132,7 @@
 
         <section id="summaryPanel" class="report-panel" role="tabpanel">
           <div class="report-section-heading">
-            <div><p class="eyebrow">VALIDATION</p><h2>Slot results</h2></div>
+            <div><p class="eyebrow">VALIDATION</p><h2>Devices by slot</h2></div>
             <span id="scanOutcome" class="outcome-tag"></span>
           </div>
           <div id="slotResults" class="slot-results"></div>

@@ -39,16 +39,19 @@ publishing and platform details.
 
 The container binds to localhost in these examples. The app has no sign-in,
 CAPTCHA, or application-level rate limit, and it makes outbound requests to the
-device URL entered by the user. Do not expose it directly to the Internet without
+node URL entered by the user. Do not expose it directly to the Internet without
 authentication, access controls, and restricted outbound destinations. Only
 test devices you are authorized to use; scans can change device values.
 
 ## 2. Use the tester
 
-1. Enter the Catena device base URL, then choose **REST** or **gRPC**.
-2. Select **Use JWT** for an authorization-enabled device and paste the compact
+The landing page shows the ST2138 version from the bundled submodule.
+
+1. Enter the **Catena node URL**, then choose **REST** or **gRPC**.
+2. Select **Use JWT** if the node requires authorization and paste the compact
 	token without a `Bearer` prefix.
-3. Select **Start scan** and review the report by slot and API endpoint.
+3. Select **Scan node**. The report shows node-wide endpoint checks separately
+   from the results for each device, identified by its slot.
 
 The scan discovers populated slots, retrieves each device model, and validates
 it with the vendored ST 2138-a validator. It reads and tests declared parameters

@@ -25,6 +25,22 @@ let lastReport = null;
 bindCommandRunner(() => lastRequest);
 bindEndpointRunner(() => lastRequest, () => lastReport);
 
+const versionLabel = document.getElementById('st2138Version');
+fetch('/st2138-version')
+  .then(response => {
+    if (!response.ok) throw new Error(`ST2138 version request failed (${response.status}).`);
+    return response.text();
+  })
+  .then(text => {
+    const version = text.trim();
+    if (!version) throw new Error('ST2138 version is empty.');
+    versionLabel.textContent = `ST2138 ${version}`;
+  })
+  .catch(error => {
+    console.warn(error);
+    versionLabel.textContent = 'ST2138 (version unavailable)';
+  });
+
 useJwtCheckbox.addEventListener('change', () => {
   jwtField.hidden = !useJwtCheckbox.checked;
   jwtTokenInput.disabled = !useJwtCheckbox.checked;
@@ -64,7 +80,7 @@ function fullUrlLabel(rawUrl) {
 async function runScan() {
   const url = urlInput.value.trim();
   if (!url) {
-    setStatus('Enter a device URL to begin.', 'error');
+    setStatus('Enter a Catena node URL to begin.', 'error');
     urlInput.focus();
     return;
   }
@@ -115,7 +131,7 @@ async function runScan() {
     setStatus(error.message, 'error');
   } finally {
     scanButton.disabled = false;
-    scanButton.querySelector('span').textContent = 'Start scan';
+    scanButton.querySelector('span').textContent = 'Scan node';
   }
 }
 

@@ -4,6 +4,7 @@ import path from 'path';
 import { createScanRoutes } from './routes/scan';
 import { initializeOpenApiSpec } from './openapi/openapi-spec';
 import { createLocalAccess } from './security/local-access';
+import { SUBMODULE_ROOT } from './validation/st2138-cli-validator';
 
 export const app = express();
 const PORT = process.env.PORT || 3000;
@@ -34,6 +35,10 @@ app.use(express.static(path.join(__dirname, 'ui')));
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ status: 'ok' });
+});
+
+app.get('/st2138-version', (req, res) => {
+  res.type('text/plain').sendFile(path.resolve(SUBMODULE_ROOT, 'VERSION'));
 });
 
 // Serve index.html for root path
