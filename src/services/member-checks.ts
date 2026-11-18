@@ -1,7 +1,7 @@
 import axios, { AxiosInstance } from 'axios';
 import { isDeepStrictEqual } from 'util';
 import { runSt2138ValidateResponse, St2138ValidateResult } from '../validation/st2138-cli-validator';
-import { validateEndpointResponse } from './response-validation';
+import { validateEndpointResponse, ParamInfoScope } from './response-validation';
 import { streamCollector, grpcDeadline } from '../security/device-transport';
 
 type DeviceMember = {
@@ -357,52 +357,29 @@ function grpcErrorStatus(error: any): number | null {
 
 export async function runGrpcApiChecks(client: any, slot: number, model: unknown) {
   const checks: Array<Record<string, any> & { ok: boolean }> = [];
-  const metadata = [
-    ['ParamInfoRequest', 'param_info_response', true],
-    ['GetParam', 'component_param', false],
-    ['ListLanguages', 'language_list', false],
-    ['LanguagePackRequest', 'component_language_pack', false]
-  ] as const;
-
-  const record = async (method: string, request: any, schema: string, stream = false, member: Record<string, any> = {}) => {
+  const record = async (
+    method: string, request: unknown, title: string, member: Record<string, unknown> = {}, scope?: ParamInfoScope
+  ) => {
+    const stream = scope !== undefined;
+    const base = {
+      method, endpoint: `CatenaService.${method}`, title, slot, isStream: stream, tested: true,
+      requestPreview: JSON.stringify(request, null, 2),
+      manualRequest: request,
+      operation: 'READ',
+      ...member
+    };
     try {
       const raw = stream ? await grpcStream(client, method, request) : (await grpcCall(client, method, request)).response;
-      const values = method === 'ListLanguages' ? raw.languages : raw;
-      const list = stream ? values : [values];
-      const responseValidations = await Promise.all(list.map((value: unknown) =>
-        validateEndpointResponse({
-          protocol: 'grpc',
-          method,
-          endpoint: `CatenaService.${method}`,
-          status: 0,
-          payload: value
-        })
-      ));
-      const validations = responseValidations.flatMap((validation) => validation.results);
-      const ok = validations.every((validation) => validation.ok);
-      const validationSummary = {
-        schema,
-        ran: responseValidations.some((validation) => validation.ran),
-        ok,
-        note: ok ? `${responseValidations.length} response item(s) valid` : 'response failed ST 2138 validation',
-        results: validations
-      };
+      const validation = await validateEndpointResponse({
+        protocol: 'grpc', method, endpoint: base.endpoint, status: 0, payload: raw, isStream: stream, paramInfoScope: scope
+      });
       checks.push({
-        method,
-        endpoint: `CatenaService.${method}`,
-        title: method === 'GetParam' ? 'Read parameter descriptor' : method === 'ParamInfoRequest' ? 'List parameter metadata' : method === 'ListLanguages' ? 'List supported languages' : 'Read language pack',
-        slot,
-        isStream: stream,
-        tested: true,
+        ...base,
         status: 0,
-        ok,
-        note: ok ? (stream ? `${values.length} response(s) validated` : 'response validated') : 'response failed ST 2138 validation',
-        requestPreview: JSON.stringify(request, null, 2),
+        ok: validation.ok,
+        note: validation.note,
         responsePreview: JSON.stringify(raw, null, 2),
-        validation: validationSummary,
-        manualRequest: request,
-        operation: method === 'GetParam' || method === 'ParamInfoRequest' || method === 'ListLanguages' || method === 'LanguagePackRequest' ? 'READ' : undefined,
-        ...member
+        validation
       });
     } catch (error) {
       const exception = {
@@ -411,16 +388,10 @@ export async function runGrpcApiChecks(client: any, slot: number, model: unknown
       };
       const exceptionValidation = await validateResponse('exception', exception);
       checks.push({
-        method,
-        endpoint: `CatenaService.${method}`,
-        title: method === 'GetParam' ? 'Read parameter descriptor' : method === 'ParamInfoRequest' ? 'List parameter metadata' : method === 'ListLanguages' ? 'List supported languages' : 'Read language pack',
-        slot,
-        isStream: stream,
-        tested: true,
+        ...base,
         status: grpcErrorStatus(error) ?? 0,
         ok: false,
         note: error instanceof Error ? error.message : String(error),
-        requestPreview: JSON.stringify(request, null, 2),
         responsePreview: JSON.stringify(exception, null, 2),
         validation: {
           schema: 'exception',
@@ -428,17 +399,26 @@ export async function runGrpcApiChecks(client: any, slot: number, model: unknown
           ok: exceptionValidation.ok,
           note: exceptionValidation.stdout,
           results: [exceptionValidation]
-        },
-        ...member
+        }
       });
     }
   };
 
-  await record('ParamInfoRequest', { slot, oid_prefix: '', recursive: true }, metadata[0][1], true);
-  for (const member of collectMembers(model)) {
-    await record('GetParam', { slot, oid: member.path }, metadata[1][1], false, {
-      memberType: 'Parameter', oid: member.path, operation: 'READ'
+  const members = collectMembers(model);
+  const knownOids = members.map(member => member.path);
+  const recordParamInfo = async (prefix: string) => {
+    for (const recursive of [false, true]) {
+      await record('ParamInfoRequest', { slot, oid_prefix: prefix, recursive }, 'List parameter metadata',
+        { recursive, ...(prefix ? { memberType: 'Parameter', oid: prefix } : {}) },
+        { prefix, recursive, knownOids });
+    }
+  };
+  await recordParamInfo('');
+  for (const member of members) {
+    await record('GetParam', { slot, oid: member.path }, 'Read parameter descriptor', {
+      memberType: 'Parameter', oid: member.path
     });
+    await recordParamInfo(member.path);
   }
 
   let languages: string[] = [];
@@ -475,8 +455,8 @@ export async function runGrpcApiChecks(client: any, slot: number, model: unknown
   }
 
   for (const language of languages) {
-    await record('LanguagePackRequest', { slot, language }, metadata[3][1], false, {
-      operation: 'READ', resourceGroup: 'Language packs', resourceKey: language, resourceKind: 'language-pack'
+    await record('LanguagePackRequest', { slot, language }, 'Read language pack', {
+      resourceGroup: 'Language packs', resourceKey: language, resourceKind: 'language-pack'
     });
   }
 

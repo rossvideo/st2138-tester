@@ -75,6 +75,7 @@
 .endpoint-result.fail > summary strong { color: #a83221; }
 .endpoint-result.not-run { border-left: 3px solid var(--line-strong); }
 .endpoint-result.not-run > summary strong { color: var(--muted); }
+.param-info-stream-variants { display: grid; gap: 5px; padding: 0 12px 10px; }
 .endpoint-diagnostics { padding: 0 13px 13px; }
 .endpoint-diagnostics > p { color: var(--muted); font-size: 11px; }
 .endpoint-previews { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }

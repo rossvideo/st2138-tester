@@ -20,9 +20,10 @@ const connectedProtocol = document.getElementById('connectedProtocol');
 const changeDeviceButton = document.getElementById('changeDeviceButton');
 const rescanButton = document.getElementById('rescanButton');
 let lastRequest = null;
+let lastReport = null;
 
 bindCommandRunner(() => lastRequest);
-bindEndpointRunner(() => lastRequest);
+bindEndpointRunner(() => lastRequest, () => lastReport);
 
 useJwtCheckbox.addEventListener('change', () => {
   jwtField.hidden = !useJwtCheckbox.checked;
@@ -88,6 +89,7 @@ async function runScan() {
     const report = await scanDevice(lastRequest.protocol, url, lastRequest.jwt, lastRequest.allowInsecureTls,
       (progress) => setStatus(progress, 'working'));
     renderReport(report, url);
+    lastReport = report;
     connectedHost.textContent = fullUrlLabel(url);
     connectedProtocol.textContent = `${lastRequest.protocol.toUpperCase()}${lastRequest.allowInsecureTls ? ' · TLS unverified' : ''}`;
     connectionLed.classList.remove('is-working', 'is-failed');
@@ -135,6 +137,7 @@ rescanButton.addEventListener('click', async () => {
 
 changeDeviceButton.addEventListener('click', () => {
   lastRequest = null;
+  lastReport = null;
   jwtTokenInput.value = '';
   useJwtCheckbox.checked = false;
   insecureTlsCheckbox.checked = false;

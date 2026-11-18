@@ -10,7 +10,7 @@ function parseOptionalJson(text, label) {
   }
 }
 
-export function bindEndpointRunner(getConnection) {
+export function bindEndpointRunner(getConnection, getReport) {
   const container = document.getElementById('endpointAudit');
 
   container.addEventListener('submit', async (event) => {
@@ -22,6 +22,7 @@ export function bindEndpointRunner(getConnection) {
     const method = form.dataset.method;
     const endpoint = form.dataset.endpoint;
     const protocol = form.dataset.protocol || connection.protocol;
+    const slot = form.dataset.slot === '' ? null : Number(form.dataset.slot);
     const status = form.querySelector('.endpoint-manual-status');
     const output = form.querySelector('.endpoint-manual-response');
     const button = form.querySelector('button[type="submit"]');
@@ -54,6 +55,9 @@ export function bindEndpointRunner(getConnection) {
     output.hidden = false;
 
     try {
+      const knownParamOids = form.hasAttribute('data-param-info-stream')
+        ? getReport()?.slots.find(entry => entry.slot === slot)?.memberChecks?.checks.map(check => check.path)
+        : undefined;
       const result = await runEndpoint({
         protocol,
         url: connection.url,
@@ -61,7 +65,8 @@ export function bindEndpointRunner(getConnection) {
         ...(connection.jwt ? { jwt: connection.jwt } : {}),
         method,
         endpoint,
-        slot: form.dataset.slot === '' ? null : Number(form.dataset.slot),
+        slot,
+        knownParamOids,
         body,
         isStream: form.dataset.stream === 'true'
       });

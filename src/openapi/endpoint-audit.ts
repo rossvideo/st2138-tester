@@ -1,6 +1,6 @@
 import type { AxiosInstance } from 'axios';
 import type { HttpMethod, OpenApiEndpoint } from './openapi-spec';
-import { validateEndpointResponse, ResponseValidation } from '../services/response-validation';
+import { validateEndpointResponse, ParamInfoScope, ResponseValidation } from '../services/response-validation';
 import { connectStreamTransportOptions } from '../security/device-transport';
 
 /** Status that means "not implemented" per transport (lined up with Catena). */
@@ -42,6 +42,7 @@ export type EndpointAuditResult = {
   manualBody?: unknown;
   manualRequest?: unknown;
   title?: string;
+  recursive?: boolean;
 };
 
 export type AuditContext = {
@@ -54,6 +55,7 @@ export type AuditContext = {
   fqoid?: string;
   memberType?: string;
   memberReadOnly?: boolean;
+  knownParamOids?: readonly string[];
   /**
    * The device model for `sampleSlot`. No longer used to generate per-member
    * ({fqoid}) endpoints — those are covered by the Member Tests section — but
@@ -266,10 +268,9 @@ function isTimeout(error: any): boolean {
   return error?.code === 'ECONNABORTED' || /timeout/i.test(error?.message || '');
 }
 
-async function callStream(client: AxiosInstance, url: string, method: HttpMethod): Promise<CallResult> {
+async function callStream(client: AxiosInstance, url: string, method: HttpMethod, readAll: boolean): Promise<CallResult> {
   const requestBody = bodyForMethod(method);
   try {
-    // Read one SSE event so its payload can be validated, then close the stream.
     const response = await client.request({
       url,
       method,
@@ -290,7 +291,7 @@ async function callStream(client: AxiosInstance, url: string, method: HttpMethod
       };
     }
     const payload = response.status >= 200 && response.status < 300
-      ? await readFirstSseEvent(stream)
+      ? await readSseEvents(stream, readAll)
       : (stream.destroy(), undefined);
 
     const ok = response.status >= 200 && response.status < 300;
@@ -314,19 +315,22 @@ async function callStream(client: AxiosInstance, url: string, method: HttpMethod
   }
 }
 
-function readFirstSseEvent(stream: any): Promise<unknown[]> {
+export function readSseEvents(stream: any, readAll: boolean): Promise<unknown[]> {
   return new Promise((resolve, reject) => {
     let buffer = '';
     let settled = false;
-    const finish = (events: unknown[]) => {
+    const events: unknown[] = [];
+    const finish = (error?: Error) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       stream.destroy?.();
-      resolve(events);
+      if (error) reject(error);
+      else resolve(events);
     };
-    const timer = setTimeout(() => finish([]), STREAM_TIMEOUT_MS);
+    const timer = setTimeout(() => finish(readAll ? new Error('parameter metadata stream timeout') : undefined), STREAM_TIMEOUT_MS);
 
+    stream.setEncoding?.('utf8');
     stream.on('data', (chunk: Buffer | string) => {
       if (settled) return;
       buffer += chunk.toString();
@@ -340,20 +344,18 @@ function readFirstSseEvent(stream: any): Promise<unknown[]> {
           .join('\n');
         if (!data) continue;
         try {
-          finish([JSON.parse(data)]);
+          events.push(JSON.parse(data));
         } catch {
-          finish([data]);
+          events.push(data);
         }
-        return;
+        if (!readAll) {
+          finish();
+          return;
+        }
       }
     });
-    stream.on('end', () => finish([]));
-    stream.on('error', (error: Error) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      reject(error);
-    });
+    stream.on('end', () => finish());
+    stream.on('error', finish);
   });
 }
 
@@ -415,10 +417,11 @@ export async function executeEndpoint(
   client: AxiosInstance,
   fullUrl: string,
   endpoint: { method: HttpMethod; isStream: boolean; pathTemplate: string },
-  usedPlaceholder = false
+  usedPlaceholder = false,
+  paramInfoScope?: ParamInfoScope
 ): Promise<ExecutionOutcome> {
   const call = endpoint.isStream
-    ? await callStream(client, fullUrl, endpoint.method)
+    ? await callStream(client, fullUrl, endpoint.method, paramInfoScope !== undefined)
     : await callRegular(client, fullUrl, endpoint.method);
 
   // Endpoints without a {slot} placeholder are device-wide and mandatory.
@@ -442,7 +445,8 @@ export async function executeEndpoint(
       endpoint: new URL(fullUrl).pathname + new URL(fullUrl).search,
       status: call.status,
       payload: call.payload,
-      isStream: endpoint.isStream
+      isStream: endpoint.isStream,
+      paramInfoScope
     })
     : null;
   const deleteOnNonDeletable =
@@ -503,7 +507,9 @@ export async function executeEndpoint(
     responsePreview = buildResponsePreview(call.status, call.responseHeaders, call.payload, {
       isStream: endpoint.isStream,
       bodyText: endpoint.isStream
-        ? Array.isArray(call.payload) && call.payload.length ? JSON.stringify(call.payload, null, 2) : '(no SSE event received)'
+        ? Array.isArray(call.payload) && call.payload.length
+          ? paramInfoScope ? previewOf(call.payload) : JSON.stringify(call.payload, null, 2)
+          : '(no SSE event received)'
         : undefined
     });
   }
@@ -605,13 +611,22 @@ export async function runEndpointAudit(
       continue;
     }
 
-    const outcome = await executeEndpoint(
-      client,
-      `${ctx.deviceUrl}${resolvedEndpoint}`,
-      endpoint,
-      !!placeholderNote
-    );
-    results.push({ ...base, tested: true, ...outcome });
+    const isParamInfoStream = endpoint.method === 'GET' && endpoint.isStream
+      && /\/param-info\/(?:\{fqoid\}\/)?stream$/.test(endpoint.pathTemplate);
+    if (isParamInfoStream) {
+      for (const recursive of [false, true]) {
+        const path = recursive ? `${resolvedEndpoint}?recursive=true` : resolvedEndpoint;
+        const outcome = await executeEndpoint(client, `${ctx.deviceUrl}${path}`, endpoint, !!placeholderNote, {
+          prefix: ctx.fqoid ?? '',
+          recursive,
+          knownOids: ctx.knownParamOids ?? []
+        });
+        results.push({ ...base, title: base.title ?? 'List parameter metadata', endpoint: path, recursive, tested: true, ...outcome });
+      }
+    } else {
+      const outcome = await executeEndpoint(client, `${ctx.deviceUrl}${resolvedEndpoint}`, endpoint, !!placeholderNote);
+      results.push({ ...base, tested: true, ...outcome });
+    }
   }
 
   return results;

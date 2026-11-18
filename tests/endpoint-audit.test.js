@@ -11,6 +11,7 @@ const { Readable } = require('node:stream');
 const { runEndpointAudit } = require('../src/openapi/endpoint-audit');
 const { executeEndpoint } = require('../src/openapi/endpoint-audit');
 const { runManualEndpoint } = require('../src/services/manual-endpoint');
+const { runGrpcApiChecks } = require('../src/services/member-checks');
 const { validateEndpointResponse } = require('../src/services/response-validation');
 const { responseValidationOutput, validationDiagnostics } = require('../src/ui/validation.js');
 const { renderReport } = require('../src/ui/render.js');
@@ -83,6 +84,105 @@ test('audits member routes against a concrete FQOID and tags CRUD operations', a
   assert.equal(results[0].validation.ok, true);
   assert.equal(results[1].operation, 'UPDATE');
   assert.equal(results[1].tested, false);
+});
+
+test('REST audits both recursive modes for slot and member metadata streams', async () => {
+  const requests = [];
+  const client = {
+    async request({ url }) {
+      const { pathname, search, searchParams } = new URL(url);
+      requests.push(pathname + search);
+      const member = pathname.endsWith('/audio/stream');
+      const recursive = searchParams.has('recursive');
+      // Simulate a device that honors the flag slot-wide but ignores it for one member.
+      const oids = recursive && !member ? ['audio', 'audio/meter'] : ['audio'];
+      return {
+        status: 200,
+        data: Readable.from(oids.map(oid => `data: ${JSON.stringify({ info: { oid, type: oid === 'audio' ? 'STRUCT' : 'FLOAT32' } })}\n\n`))
+      };
+    }
+  };
+  const ctx = {
+    deviceUrl: 'http://device.test', apiPrefix: '/st2138-api/v1', sampleSlot: 1,
+    sampleLanguageCode: '', knownParamOids: ['audio', 'audio/meter']
+  };
+  const slot = await runEndpointAudit(client, [
+    { pathTemplate: '/{slot}/param-info/stream', method: 'GET', isStream: true }
+  ], ctx);
+  const member = await runEndpointAudit(client, [
+    { pathTemplate: '/{slot}/param-info/{fqoid}/stream', method: 'GET', isStream: true }
+  ], { ...ctx, fqoid: 'audio' });
+
+  assert.deepEqual(requests, [
+    '/st2138-api/v1/1/param-info/stream',
+    '/st2138-api/v1/1/param-info/stream?recursive=true',
+    '/st2138-api/v1/1/param-info/audio/stream',
+    '/st2138-api/v1/1/param-info/audio/stream?recursive=true'
+  ]);
+  assert.deepEqual([...slot, ...member].map(({ recursive, ok }) => [recursive, ok]),
+    [[false, true], [true, true], [false, true], [true, false]]);
+  assert.match(slot[1].responsePreview, /audio\/meter/);
+  assert.match(member[1].validation.results.at(-1).stdout, /Missing OIDs: audio\/meter/);
+});
+
+test('gRPC audits both recursive modes and rejects descendants returned with the flag off', async () => {
+  const requests = [];
+  const model = { params: { audio: { type: 'STRUCT', params: { meter: { type: 'FLOAT32' } } } } };
+  const client = {
+    ParamInfoRequest(request) {
+      requests.push(request);
+      const { oid_prefix: prefix, recursive } = request;
+      const oids = prefix === 'audio/meter' ? [prefix]
+        : recursive || !prefix ? ['audio', 'audio/meter'] : ['audio'];
+      return Readable.from(oids.map(oid => ({ info: { oid, type: oid === 'audio' ? 'STRUCT' : 'FLOAT32' } })));
+    },
+    GetParam({ oid }, _options, callback) {
+      callback(null, { oid: oid.split('/').at(-1), param: { type: 'FLOAT32' } });
+    },
+    ListLanguages(_request, _options, callback) {
+      callback(null, { languages: [] });
+    }
+  };
+  const { checks } = await runGrpcApiChecks(client, 1, model);
+  const streams = checks.filter(check => check.method === 'ParamInfoRequest');
+  assert.deepEqual(requests, ['', 'audio', 'audio/meter'].flatMap(oid_prefix =>
+    [false, true].map(recursive => ({ slot: 1, oid_prefix, recursive }))));
+  assert.deepEqual(streams.map(check => check.ok), [false, true, true, true, true, true]);
+  assert.deepEqual(streams.map(check => check.manualRequest), requests);
+  assert.match(streams[0].validation.results.at(-1).stdout, /Out-of-scope OIDs: audio\/meter/);
+});
+
+test('manual REST metadata requests fail the same scope check as the audit', async (context) => {
+  const server = http.createServer((request, response) => {
+    const recursive = new URL(request.url, 'http://localhost').searchParams.has('recursive');
+    const oids = recursive ? ['audio', 'audio/meter'] : ['counter'];
+    response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    response.end(oids.map(oid => `data: ${JSON.stringify({ info: { oid, type: 'FLOAT32' } })}\n\n`).join(''));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  context.after(() => new Promise(resolve => server.close(resolve)));
+  const url = `http://127.0.0.1:${server.address().port}`;
+  const knownParamOids = ['audio', 'audio/meter'];
+  const [audit] = await runEndpointAudit(axios, [
+    { pathTemplate: '/{slot}/param-info/stream', method: 'GET', isStream: true }
+  ], {
+    deviceUrl: url, apiPrefix: '/st2138-api/v1', sampleSlot: 0, sampleLanguageCode: '', knownParamOids
+  });
+  const input = {
+    protocol: 'rest', url, method: 'GET', endpoint: audit.endpoint, slot: 0, isStream: true, knownParamOids
+  };
+  const manual = await runManualEndpoint(input);
+  assert.equal(audit.ok, false);
+  assert.deepEqual(manual.validation, audit.validation);
+  assert.equal(manual.ok, false);
+  assert.match(manual.validation.results.at(-1).stdout, /Missing OIDs: audio\./);
+
+  const staleReport = await runManualEndpoint({ ...input, knownParamOids: undefined });
+  assert.equal(staleReport.ok, false);
+  assert.match(staleReport.error, /Refresh the page and run a new scan/);
+
+  const recursive = await runManualEndpoint({ ...input, endpoint: `${input.endpoint}?recursive=false` });
+  assert.equal(recursive.ok, true);
 });
 
 test('validates manual endpoint responses against their ST 2138 schema', async (context) => {
@@ -410,6 +510,55 @@ test('shows compact validator checks and failure diagnostics in both report view
   }
 });
 
+test('nests recursive REST and gRPC checks under one stream card per target', t => {
+  const elements = new Map();
+  const previous = globalThis.document;
+  globalThis.document = {
+    getElementById(id) {
+      if (!elements.has(id)) elements.set(id, {});
+      return elements.get(id);
+    }
+  };
+  t.after(() => { globalThis.document = previous; });
+
+  for (const protocol of ['rest', 'grpc']) {
+    const grpc = protocol === 'grpc';
+    const endpointAudit = [undefined, 'audio/meter'].flatMap(oid => [false, true].map(recursive => ({
+      endpoint: grpc ? 'CatenaService.ParamInfoRequest'
+        : `/st2138-api/v1/1/param-info/${oid ? `${oid}/` : ''}stream${recursive ? '?recursive=true' : ''}`,
+      pathTemplate: grpc ? 'CatenaService.ParamInfoRequest' : `/{slot}/param-info/${oid ? '{fqoid}/' : ''}stream`,
+      method: grpc ? 'ParamInfoRequest' : 'GET',
+      slot: 1, oid, memberType: oid ? 'Parameter' : undefined,
+      recursive, isStream: true, tested: true, ok: recursive,
+      manualRequest: grpc ? { slot: 1, oid_prefix: oid ?? '', recursive } : undefined
+    })));
+    renderReport({
+      protocol, deviceUrl: 'http://device.test', scannedAt: new Date().toISOString(),
+      summary: { total: 1, passed: 0, failed: 1 }, slots: [{ slot: 1, ok: false }], endpointAudit
+    });
+
+    for (const id of ['slotResults', 'endpointAudit']) {
+      const markup = elements.get(id).innerHTML;
+      const [, ...groups] = markup.split('param-info-stream-group">');
+      assert.equal(groups.length, 2, `${protocol} ${id}: one card per target`);
+      for (const group of groups) {
+        assert.match(group, /^<summary>.*<strong[^>]*>FAIL<\/strong><\/summary><div class="param-info-stream-variants">/);
+        assert.deepEqual(group.match(/Recursive: (?:off|on)/g), ['Recursive: off', 'Recursive: on']);
+        if (id === 'endpointAudit') {
+          assert.equal(group.match(/data-param-info-stream/g).length, 2);
+          if (grpc) {
+            assert.match(group, /data-manual-request="[^"]+&quot;recursive&quot;:false/);
+            assert.match(group, /data-manual-request="[^"]+&quot;recursive&quot;:true/);
+          } else {
+            assert.match(group, /data-endpoint="[^"]+\/stream"/);
+            assert.match(group, /data-endpoint="[^"]+\/stream\?recursive=true"/);
+          }
+        }
+      }
+    }
+  }
+});
+
 test('validates ParamInfo responses for gRPC and REST', async () => {
   const protobufResponse = {
     info: {
@@ -463,6 +612,11 @@ test('runs a manual gRPC endpoint and validates its response', async (context) =
       requestReceived = request.request;
       authorizationReceived = request.metadata.get('authorization');
       callback(null, { slots: [0, 4] });
+    },
+    ParamInfoRequest(call) {
+      call.write({ info: { oid: 'audio', type: 'STRUCT' } });
+      call.write({ info: { oid: 'audio/meter', type: 'FLOAT32' } });
+      call.end();
     }
   });
   const port = await new Promise((resolve, reject) => {
@@ -488,6 +642,20 @@ test('runs a manual gRPC endpoint and validates its response', async (context) =
   assert.equal(result.validation.schema, 'slot_list');
   assert.equal(result.validation.ok, true);
   assert.deepEqual(authorizationReceived, []);
+  const metadataInput = {
+    protocol: 'grpc', url: `http://127.0.0.1:${port}`, method: 'READ',
+    endpoint: 'CatenaService.ParamInfoRequest', slot: 0,
+    knownParamOids: ['audio', 'audio/meter']
+  };
+  const off = await runManualEndpoint({ ...metadataInput, body: { oid_prefix: 'audio', recursive: false } });
+  assert.equal(off.ok, false);
+  assert.match(off.validation.results.at(-1).stdout, /Out-of-scope OIDs: audio\/meter/);
+  const on = await runManualEndpoint({ ...metadataInput, body: { oid_prefix: 'audio', recursive: true } });
+  assert.equal(on.ok, true);
+  const staleReport = await runManualEndpoint({ ...metadataInput, knownParamOids: undefined });
+  assert.equal(staleReport.ok, false);
+  assert.match(staleReport.error, /Refresh the page and run a new scan/);
+
   configureDeviceTransport('synthetic.payload.signature');
   context.after(() => configureDeviceTransport());
   const authenticated = await runManualEndpoint({

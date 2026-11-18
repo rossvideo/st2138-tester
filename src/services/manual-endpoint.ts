@@ -3,6 +3,7 @@ import * as grpc from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';
 import path from 'path';
 import { validateEndpointResponse } from './response-validation';
+import { readSseEvents } from '../openapi/endpoint-audit';
 import { grpcComponentsToDeviceModel, validateGrpcComponents } from './device-scan';
 import { runSt2138ValidateJsOnModel, St2138ValidateResult } from '../validation/st2138-cli-validator';
 import { restTransportOptions, connectStreamTransportOptions, grpcTransport, streamCollector, grpcDeadline, captureGrpcConnect, DEVICE_REQUEST_TIMEOUT_MS } from '../security/device-transport';
@@ -15,7 +16,15 @@ type ManualEndpointRequest = {
   slot: number | null;
   body?: unknown;
   isStream?: boolean;
+  knownParamOids?: string[];
 };
+
+function requireKnownParamOids(knownParamOids?: string[]): string[] {
+  if (!knownParamOids) {
+    throw new Error('Refresh the page and run a new scan before checking parameter metadata manually. This report did not supply the expected OIDs.');
+  }
+  return knownParamOids;
+}
 
 function normalizeBaseUrl(rawUrl: string): string {
   const candidate = /^https?:\/\//i.test(rawUrl.trim()) ? rawUrl.trim() : `https://${rawUrl.trim()}`;
@@ -108,6 +117,14 @@ export async function runManualEndpoint(input: ManualEndpointRequest & { request
     const requestUrl = `${baseUrl}${input.endpoint}`;
 
     try {
+      const { pathname, searchParams } = new URL(requestUrl);
+      const metadataStream = input.isStream && method === 'GET'
+        ? /\/\d+\/param-info\/(?:(.+)\/)?stream$/.exec(pathname) : null;
+      const paramInfoScope = metadataStream ? {
+        prefix: metadataStream[1]?.split('/').map(decodeURIComponent).join('/') ?? '',
+        recursive: searchParams.has('recursive'),
+        knownOids: requireKnownParamOids(input.knownParamOids)
+      } : undefined;
       const response = await axios.request({
         ...restTransportOptions(),
         url: requestUrl,
@@ -123,9 +140,11 @@ export async function runManualEndpoint(input: ManualEndpointRequest & { request
         response.data.destroy();
         throw new Error('Connect response must use the text/event-stream content type.');
       }
-      const payload = input.isStream ? await captureSse(response.data) : response.data;
+      const payload = paramInfoScope && response.status >= 200 && response.status < 300
+        ? await readSseEvents(response.data, true)
+        : input.isStream ? await captureSse(response.data) : response.data;
       const validation = await validateEndpointResponse({
-        protocol: 'rest', method, endpoint: input.endpoint, status: response.status, payload, isStream: input.isStream
+        protocol: 'rest', method, endpoint: input.endpoint, status: response.status, payload, isStream: input.isStream, paramInfoScope
       });
       return {
         protocol: 'rest' as const,
@@ -165,6 +184,11 @@ export async function runManualEndpoint(input: ManualEndpointRequest & { request
 
   try {
     const isStream = Boolean(Service.service[rpcMethod].responseStream);
+    const paramInfoScope = rpcMethod === 'ParamInfoRequest' ? {
+      prefix: typeof request?.oid_prefix === 'string' ? request.oid_prefix : '',
+      recursive: Boolean(request?.recursive),
+      knownOids: requireKnownParamOids(input.knownParamOids)
+    } : undefined;
     const payload = isStream
       ? rpcMethod === 'Connect' ? await captureGrpcConnect(client, request) : await callStream(client, rpcMethod, request)
       : await callUnary(client, rpcMethod, request);
@@ -176,7 +200,7 @@ export async function runManualEndpoint(input: ManualEndpointRequest & { request
       validation = await validateGrpcComponents(payload as any[], deviceValidation);
     } else {
       validation = await validateEndpointResponse({
-        protocol: 'grpc', method: rpcMethod, endpoint: input.endpoint, status: 0, payload, isStream
+        protocol: 'grpc', method: rpcMethod, endpoint: input.endpoint, status: 0, payload, isStream, paramInfoScope
       });
     }
     return {

@@ -8,6 +8,12 @@ export type ResponseValidation = {
   results: St2138ValidateResult[];
 };
 
+export type ParamInfoScope = {
+  prefix: string;
+  recursive: boolean;
+  knownOids: readonly string[];
+};
+
 function shapeCheck(name: string, definition: string, ok: boolean, message: string, target = 'response'): St2138ValidateResult {
   return {
     ran: true, ok, exitCode: ok ? 0 : 2, stderr: '',
@@ -15,6 +21,28 @@ function shapeCheck(name: string, definition: string, ok: boolean, message: stri
     test: { name, kind: 'Tester rule', definition },
     failingLine: null, failingLines: [], failingLineContent: []
   };
+}
+
+function validateParamInfoScope(payload: unknown[], scope: ParamInfoScope): St2138ValidateResult {
+  const { prefix, recursive, knownOids } = scope;
+  const inScope = (oid: string) => prefix
+    ? oid === prefix || (recursive && oid.startsWith(`${prefix}/`))
+    : recursive || !oid.includes('/');
+  const returned = new Set<string>();
+  for (const item of payload) {
+    const oid = (item as { info?: { oid?: unknown } } | null)?.info?.oid;
+    if (typeof oid === 'string') returned.add(oid);
+  }
+  const expected = prefix ? new Set([prefix, ...knownOids.filter(inScope)]) : new Set(knownOids.filter(inScope));
+  const missing = [...expected].filter(oid => !returned.has(oid));
+  const unexpected = [...returned].filter(oid => !inScope(oid));
+  const errors = [
+    ...(missing.length ? [`Missing OIDs: ${missing.join(', ')}.`] : []),
+    ...(unexpected.length ? [`Out-of-scope OIDs: ${unexpected.join(', ')}.`] : [])
+  ];
+  return shapeCheck('ParamInfo recursive scope',
+    `For ${prefix || 'the slot'} with recursion ${recursive ? 'enabled' : 'disabled'}, return the requested parameter(s)${recursive ? ' and their known descendants' : ' without descendants'}.`,
+    errors.length === 0, errors.join(' '), 'parameter metadata stream');
 }
 
 function restResponseSchema(method: string, endpoint: string, status: number, payload: any, isStream: boolean): string | null {
@@ -253,15 +281,36 @@ async function validatePushUpdates(payload: unknown, protocol: 'rest' | 'grpc'):
   };
 }
 
-export async function validateEndpointResponse(input: {
+type EndpointResponse = {
   protocol: 'rest' | 'grpc';
   method: string;
   endpoint: string;
   status: number;
   payload: unknown;
   isStream?: boolean;
-}): Promise<ResponseValidation> {
-  const successful = input.protocol === 'rest' ? input.status >= 200 && input.status < 300 : input.status === 0;
+  paramInfoScope?: ParamInfoScope;
+};
+
+function isSuccessfulResponse(input: EndpointResponse): boolean {
+  return input.protocol === 'rest' ? input.status >= 200 && input.status < 300 : input.status === 0;
+}
+
+export async function validateEndpointResponse(input: EndpointResponse): Promise<ResponseValidation> {
+  const validation = await validateResponseBody(input);
+  if (!input.paramInfoScope || !isSuccessfulResponse(input) || !Array.isArray(input.payload)) return validation;
+
+  const scope = validateParamInfoScope(input.payload, input.paramInfoScope);
+  return {
+    ...validation,
+    ran: true,
+    ok: validation.ok && scope.ok,
+    note: scope.ok ? validation.note : 'parameter metadata did not match the requested recursive scope',
+    results: [...validation.results, scope]
+  };
+}
+
+async function validateResponseBody(input: EndpointResponse): Promise<ResponseValidation> {
+  const successful = isSuccessfulResponse(input);
   if (successful && input.isStream && (input.payload === undefined || input.payload === null)) {
     return { schema: null, ran: false, ok: true, note: 'The stream opened, but returned no event body to validate.', results: [] };
   }
@@ -276,7 +325,8 @@ export async function validateEndpointResponse(input: {
     return validatePushUpdates(input.payload, input.protocol);
   }
 
-  if (input.protocol === 'rest' && input.isStream && /\/\d+\/stream(?:\?|$)/.test(input.endpoint)) {
+  if (input.protocol === 'rest' && input.isStream && !/\/param-info\//.test(input.endpoint)
+    && /\/\d+\/stream(?:\?|$)/.test(input.endpoint)) {
     const slotMatch = input.endpoint.match(/\/([0-9]+)\/stream(?:\?|$)/);
     return validateDeviceComponentPayload(input.payload, slotMatch ? Number(slotMatch[1]) : null);
   }

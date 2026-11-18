@@ -52,11 +52,14 @@ function memberCheckMarkup(check) {
   </details>`;
 }
 
-function apiEndpointCheckMarkup(endpoint) {
+function recursionLabel(endpoint) {
+  return `Recursive: ${endpoint.recursive ? 'on' : 'off'}`;
+}
+
+function apiEndpointCheckMarkup(endpoint, variant = false) {
   const isNotRun = !endpoint.tested;
   const statusLabel = isNotRun ? 'NOT RUN' : endpoint.ok ? (endpoint.warning ? 'WARN' : 'PASSED') : 'FAILED';
   const statusTone = isNotRun ? '' : endpoint.ok ? 'pass-text' : 'fail-text';
-  const title = endpoint.title || endpoint.endpoint;
   const grpcMethod = endpoint.protocol === 'grpc'
     ? endpoint.endpoint?.match(/CatenaService\.([^.]+)/)?.[1] || endpoint.method
     : endpoint.method;
@@ -68,7 +71,6 @@ function apiEndpointCheckMarkup(endpoint) {
         ? endpoint.method === 'PUT' ? 'SetValue' : 'GetValue'
         : '';
   const restMethodLabel = restMethod ? `${restMethod}${endpoint.isStream ? ' (stream)' : ''}` : '';
-  const methodLabel = endpoint.protocol === 'grpc' ? grpcMethod : restMethodLabel || endpoint.method;
   const restPath = String(endpoint.endpoint || endpoint.pathTemplate || '')
     .replace(/^\/st2138-api\/v1(?:\/\d+)?(?=\/|$)/i, '') || '/';
   const restTargetLabel = endpoint.oid
@@ -83,7 +85,7 @@ function apiEndpointCheckMarkup(endpoint) {
     return `${item.schema || 'Response'}: ${item.ran === false ? 'not run' : item.ok ? 'passed' : 'failed'}${item.note ? ` (${item.note})` : ''}`;
   }).filter(Boolean).join('\n');
   return `<details class="member-check api-endpoint-check">
-    <summary><span class="member-path">${escapeHtml(rowLabel)}</span><span class="member-labels"><span class="${statusTone}">${statusLabel}</span></span></summary>
+    <summary><span class="member-path">${escapeHtml(variant ? recursionLabel(endpoint) : rowLabel)}</span><span class="member-labels"><span class="${statusTone}">${statusLabel}</span></span></summary>
     <div class="member-check-details">
       ${endpoint.note ? `<p>${escapeHtml(endpoint.note)}</p>` : ''}
       <div class="diagnostic-line"><span>Status</span><strong class="${statusTone}">${isNotRun ? 'Not run' : escapeHtml(endpoint.status)}</strong></div>
@@ -113,7 +115,7 @@ function slotResultMarkup(slot, slotEndpoints) {
           <div class="validation-group-content">${checks.length ? checks.map(memberCheckMarkup).join('') : '<p class="quiet-text">No parameter checks were returned.</p>'}</div>
         </details>
         <details class="validation-group api-validation-group"><summary><span>API endpoints</span>${apiSummary}</summary>
-          <div class="validation-group-content">${apiChecks.length ? apiChecks.map(apiEndpointCheckMarkup).join('') : `<p class="quiet-text">No API endpoint checks were returned. ${endpointSummary.passed} tested endpoint checks passed; ${endpointSummary.failed} failed.</p>`}</div>
+          <div class="validation-group-content">${apiChecks.length ? endpointListMarkup(apiChecks, true) : `<p class="quiet-text">No API endpoint checks were returned. ${endpointSummary.passed} tested endpoint checks passed; ${endpointSummary.failed} failed.</p>`}</div>
         </details>
       </div></section>
     </div>
@@ -150,8 +152,8 @@ function slotProductSummary(slot) {
   };
 }
 
-function endpointMarkup(endpoint) {
-  const title = endpoint.title || endpoint.pathTemplate || endpoint.endpoint;
+function endpointMarkup(endpoint, variant = false) {
+  const title = variant ? recursionLabel(endpoint) : endpoint.title || endpoint.pathTemplate || endpoint.endpoint;
   const status = !endpoint.tested ? 'not-run' : endpoint.ok ? 'pass' : 'fail';
   const label = !endpoint.tested ? 'NOT RUN' : endpoint.ok ? (endpoint.warning ? 'WARN' : 'PASS') : 'FAIL';
   const bodyCapable = endpoint.protocol === 'grpc' || ['POST', 'PUT', 'PATCH'].includes(endpoint.method);
@@ -166,7 +168,7 @@ function endpointMarkup(endpoint) {
   const validationStatus = validations.length === 0 ? '' : validationFailed ? 'invalid response' : validationOk
     ? 'valid response'
     : validations.find((validation) => validation?.note)?.note || 'response not validated';
-  const manualForm = `<form class="endpoint-manual-form" data-protocol="${escapeHtml(endpoint.protocol || '')}" data-method="${escapeHtml(endpoint.method)}" data-endpoint="${escapeHtml(endpoint.endpoint)}" data-slot="${endpoint.slot === null ? '' : escapeHtml(endpoint.slot)}" data-stream="${Boolean(endpoint.isStream)}" data-mutating="${Boolean(endpoint.mutating)}" data-manual-request="${escapeHtml(manualRequest)}">
+  const manualForm = `<form class="endpoint-manual-form" data-protocol="${escapeHtml(endpoint.protocol || '')}" data-method="${escapeHtml(endpoint.method)}" data-endpoint="${escapeHtml(endpoint.endpoint)}" data-slot="${endpoint.slot === null ? '' : escapeHtml(endpoint.slot)}" data-stream="${Boolean(endpoint.isStream)}" data-mutating="${Boolean(endpoint.mutating)}" data-manual-request="${escapeHtml(manualRequest)}"${typeof endpoint.recursive === 'boolean' ? ' data-param-info-stream' : ''}>
       ${bodyCapable ? `<label class="field-label">Request body <span class="label-optional">(optional JSON)</span></label><textarea class="endpoint-manual-body" spellcheck="false" placeholder="{}">${escapeHtml(body)}</textarea>` : ''}
       <div class="endpoint-manual-actions"><button class="outline-button" type="submit">Run manually <span aria-hidden="true">↗</span></button><span class="endpoint-manual-status" role="status" aria-live="polite"></span></div><pre class="endpoint-manual-response" hidden></pre>
     </form>`;
@@ -182,6 +184,32 @@ function endpointTotals(entries) {
   return { passed: tested.filter((entry) => entry.ok).length, failed: tested.filter((entry) => !entry.ok).length, skipped: entries.length - tested.length };
 }
 
+function endpointListMarkup(entries, diagnosticsOnly = false) {
+  const groups = new Map();
+  for (const entry of entries) {
+    const key = typeof entry.recursive === 'boolean'
+      ? JSON.stringify([entry.protocol, entry.slot, entry.method, entry.endpoint.split('?')[0], entry.oid])
+      : entry;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(entry);
+  }
+  const render = diagnosticsOnly ? apiEndpointCheckMarkup : endpointMarkup;
+  return Array.from(groups.values(), group => {
+    const [endpoint] = group;
+    if (typeof endpoint.recursive !== 'boolean') return render(endpoint);
+    const title = endpoint.protocol === 'grpc'
+      ? `${endpoint.oid ? `${endpoint.oid} - ` : ''}ParamInfoRequest (stream)`
+      : endpoint.endpoint.split('?')[0].replace(/^\/st2138-api\/v1(?=\/)/, '');
+    const totals = endpointTotals(group);
+    const status = totals.failed ? 'fail' : totals.skipped ? 'not-run' : 'pass';
+    const label = totals.failed ? 'FAIL' : totals.skipped ? 'NOT RUN' : group.some(entry => entry.warning) ? 'WARN' : 'PASS';
+    const header = diagnosticsOnly
+      ? `<span class="member-path">${escapeHtml(title)}</span><strong class="${totals.failed ? 'fail-text' : totals.skipped ? 'quiet-text' : 'pass-text'}">${label}</strong>`
+      : `<span class="endpoint-method">${escapeHtml(endpoint.protocol === 'grpc' ? endpoint.operation || 'READ' : endpoint.method)}</span><span class="endpoint-path">${escapeHtml(title)}</span><strong>${label}</strong>`;
+    return `<details class="${diagnosticsOnly ? 'member-check' : `endpoint-result ${status}`} param-info-stream-group"><summary>${header}</summary><div class="param-info-stream-variants">${group.map(entry => render(entry, true)).join('')}</div></details>`;
+  }).join('');
+}
+
 function endpointCountsMarkup(entries) {
   const totals = endpointTotals(entries);
   return `<span class="endpoint-counts"><strong class="pass-text">${totals.passed} passed</strong><strong class="${totals.failed ? 'fail-text' : 'pass-text'}">${totals.failed} failed</strong><span>${totals.skipped} not run</span></span>`;
@@ -194,11 +222,11 @@ function memberTypeMarkup(memberType, entries) {
     group.push(entry);
     byOid.set(entry.oid, group);
   }
-  return `<details class="endpoint-member-type" open><summary><span>${escapeHtml(memberType)}</span>${endpointCountsMarkup(entries)}</summary><div class="endpoint-member-oids">${Array.from(byOid, ([oid, operations]) => `<details class="endpoint-member-oid" open><summary><span class="member-path">${escapeHtml(oid)}</span>${endpointCountsMarkup(operations)}</summary><div class="member-crud-list">${operations.map(endpointMarkup).join('')}</div></details>`).join('')}</div></details>`;
+  return `<details class="endpoint-member-type" open><summary><span>${escapeHtml(memberType)}</span>${endpointCountsMarkup(entries)}</summary><div class="endpoint-member-oids">${Array.from(byOid, ([oid, operations]) => `<details class="endpoint-member-oid" open><summary><span class="member-path">${escapeHtml(oid)}</span>${endpointCountsMarkup(operations)}</summary><div class="member-crud-list">${endpointListMarkup(operations)}</div></details>`).join('')}</div></details>`;
 }
 
 function resourceGroupMarkup(title, entries) {
-  return `<details class="endpoint-resource-group" open><summary><span>${escapeHtml(title)}</span>${endpointCountsMarkup(entries)}</summary><div class="endpoint-resource-entries">${entries.map(endpointMarkup).join('')}</div></details>`;
+  return `<details class="endpoint-resource-group" open><summary><span>${escapeHtml(title)}</span>${endpointCountsMarkup(entries)}</summary><div class="endpoint-resource-entries">${entries.map(entry => endpointMarkup(entry)).join('')}</div></details>`;
 }
 
 function languagePackGroupMarkup(entries) {
@@ -213,8 +241,8 @@ function languagePackGroupMarkup(entries) {
     packsByLanguage.set(language, group);
   }
   const children = [
-    ...(languages.length ? [`<section class="endpoint-resource-subgroup"><h3>Supported languages</h3><div class="endpoint-resource-entries">${languages.map(endpointMarkup).join('')}</div></section>`] : []),
-    ...Array.from(packsByLanguage, ([language, operations]) => `<details class="endpoint-language-group" open><summary><span>${escapeHtml(language)}</span>${endpointCountsMarkup(operations)}</summary><div class="endpoint-resource-entries">${operations.map(endpointMarkup).join('')}</div></details>`)
+    ...(languages.length ? [`<section class="endpoint-resource-subgroup"><h3>Supported languages</h3><div class="endpoint-resource-entries">${languages.map(entry => endpointMarkup(entry)).join('')}</div></section>`] : []),
+    ...Array.from(packsByLanguage, ([language, operations]) => `<details class="endpoint-language-group" open><summary><span>${escapeHtml(language)}</span>${endpointCountsMarkup(operations)}</summary><div class="endpoint-resource-entries">${operations.map(entry => endpointMarkup(entry)).join('')}</div></details>`)
   ].join('');
   return `<details class="endpoint-resource-group" open><summary><span>Language packs</span>${endpointCountsMarkup(entries)}</summary><div class="endpoint-resource-entries">${children}</div></details>`;
 }
@@ -231,7 +259,7 @@ function scopeGroupMarkup(title, entries) {
     byType.set(entry.memberType, group);
   }
   return `<details class="endpoint-scope-group" open><summary><span>${escapeHtml(title)}</span>${endpointCountsMarkup(entries)}</summary><div class="endpoint-scope-content">
-    ${general.length ? `<section class="endpoint-general-group"><h3>Device API</h3><div class="endpoint-general-list">${general.map(endpointMarkup).join('')}</div></section>` : ''}
+    ${general.length ? `<section class="endpoint-general-group"><h3>Device API</h3><div class="endpoint-general-list">${endpointListMarkup(general)}</div></section>` : ''}
     ${subscriptionEntries.length ? resourceGroupMarkup('Subscriptions', subscriptionEntries) : ''}
     ${languageEntries.length ? languagePackGroupMarkup(languageEntries) : ''}
     ${Array.from(byType, ([type, typeEntries]) => memberTypeMarkup(type, typeEntries)).join('')}

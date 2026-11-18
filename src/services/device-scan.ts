@@ -505,18 +505,20 @@ export async function scanRestDevice(rawUrl: string, specOverride?: OpenApiSpecI
   for (const slot of slots) {
     onProgress?.(`Auditing REST endpoints and parameters for slot ${slot}…`);
     const slotModel = slotResults.find((result) => result.slot === slot && result.model)?.model;
+    const memberChecks = slotResults.find((result) => result.slot === slot)?.memberChecks?.checks || [];
+    const knownParamOids = memberChecks.map(member => member.path);
     const languages = await supportedLanguages(client, deviceUrl, spec.apiPrefix, slot);
     endpointAudit.push(...await runEndpointAudit(client, slotEndpoints, {
       deviceUrl,
       apiPrefix: spec.apiPrefix,
       sampleSlot: slot,
       sampleLanguageCode: languages[0] || '',
-      deviceModel: slotModel
+      deviceModel: slotModel,
+      knownParamOids
     }, {
       skipReason: (endpoint, context) => skipRestEndpoint(endpoint, context.deviceModel, languages.length)
     }));
 
-    const memberChecks = slotResults.find((result) => result.slot === slot)?.memberChecks?.checks || [];
     for (const member of memberChecks) {
       endpointAudit.push(...await runEndpointAudit(client, memberEndpoints, {
         deviceUrl,
@@ -524,6 +526,7 @@ export async function scanRestDevice(rawUrl: string, specOverride?: OpenApiSpecI
         sampleSlot: slot,
         sampleLanguageCode: languages[0] || '',
         deviceModel: slotModel,
+        knownParamOids,
         fqoid: member.path,
         memberType: 'Parameter',
         memberReadOnly: member.readOnly
@@ -626,6 +629,7 @@ export async function scanGrpcDevice(rawUrl: string, onProgress?: ScanProgress) 
       validation?: ResponseValidation | ResponseValidation[];
       manualRequest?: unknown;
       manualBody?: unknown;
+      recursive?: boolean;
     }> = [];
     endpointAudit.push({
       endpoint: 'CatenaService.GetPopulatedSlots',
@@ -761,6 +765,7 @@ export async function scanGrpcDevice(rawUrl: string, onProgress?: ScanProgress) 
           oid: check.oid,
           operation: check.operation || 'READ',
           manualRequest: check.manualRequest,
+          recursive: check.recursive,
           validation: check.validation,
           resourceGroup: check.resourceGroup,
           resourceKey: check.resourceKey,

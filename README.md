@@ -66,6 +66,17 @@ against the vendored `push_updates` schema and checked by submember.
 Read Param responses are validated directly against `component_param`, including
 its `simple_oid` constraint.
 
+The scan checks parameter metadata streams with recursion on and off, both
+slot-wide and for individual parameters. The report nests the two checks under
+one stream card for each target, with separate results and manual runs. REST
+omits the `recursive` query parameter to turn recursion off; gRPC sends
+`recursive: false`. Each result
+checks the returned OIDs against the requested scope and the known parameters
+from the device model. **Run manually** repeats that check using the same
+scanned model and the recursion setting in the request it sends.
+If an older tab doesn't have the expected OIDs, refresh the page and scan
+again before running the check manually.
+
 The report includes schema results, parameter and endpoint checks, response
 validation details, and device metadata. Expand **Validator details** to see
 the schema or tester rule name, its result, and any warnings or errors, without

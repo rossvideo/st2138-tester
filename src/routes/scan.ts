@@ -41,6 +41,11 @@ export function createScanRoutes(access: ReturnType<typeof createLocalAccess>) {
       res.status(400).json({ message: 'A valid endpoint and method are required.' });
       return;
     }
+    if (operation === 'endpoint' && input.knownParamOids !== undefined
+      && (!Array.isArray(input.knownParamOids) || input.knownParamOids.some((oid: unknown) => typeof oid !== 'string'))) {
+      res.status(400).json({ message: 'Known parameter OIDs must be an array of strings.' });
+      return;
+    }
     access.authorize(req, res, () => { void runOperation(req, res, operation); });
   };
   router.post('/scan/rest', execute('rest'));
