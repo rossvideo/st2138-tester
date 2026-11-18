@@ -1,9 +1,10 @@
 function describeCheck(result, target, ok = result.ok, schema = result.schema) {
-  const kind = result.test?.kind === 'Tester rule' ? ' tester rule' : '';
+  const kind = result.chunk !== undefined ? ' schema rule'
+    : result.test?.kind === 'Tester rule' ? ' tester rule' : ' schema';
   const lines = result.stdout?.split('\n') || [];
   const application = lines.find(line => /^Applying (schema|tester rule) '/.test(line));
   const heading = result.test?.name ? `Applying${kind} "${result.test.name}" to ${target}`
-    : application || (schema ? `Applying "${schema}" to ${target}` : undefined);
+    : application || (schema ? `Applying schema "${schema}" to ${target}` : undefined);
   const status = result.ran === false ? 'Not run' : ok ? '✅ Passed' : '❌ Failed';
   const details = [
     ...lines.filter(line => line && line !== application &&

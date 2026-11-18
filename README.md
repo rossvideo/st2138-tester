@@ -64,6 +64,10 @@ Connect uses HTTP/2 when the server supports it. Connect updates receive field
 validation rather than full `push_updates` schema validation because the
 vendored schema does not match the protobuf update representation.
 
+Read Param responses are validated directly against `component_param`. Schema
+generation restores its missing object type (misplaced in the vendored YAML
+description); its other constraints, including `simple_oid`, are unchanged.
+
 The report includes schema results, parameter and endpoint checks, response
 validation details, and device metadata. Expand **Validator details** to see
 the schema or tester rule name, its result, and any warnings or errors, without

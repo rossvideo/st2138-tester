@@ -127,6 +127,10 @@ function ensureDeviceSchemaJson(): Promise<void> {
       const rawYaml = await fs.readFile(DEVICE_SCHEMA_YAML, 'utf8');
       const parsed = YAML.parseDocument(rawYaml, { merge: true }).toJS();
       const sanitized = stripKeysRecursive(parsed);
+      // The vendored component_param mistakenly includes its object type in the description.
+      if (sanitized.$defs.component_param.type === undefined) {
+        sanitized.$defs.component_param.type = 'object';
+      }
       await fs.mkdir(path.dirname(DEVICE_SCHEMA_JSON), { recursive: true });
       const temporarySchema = `${DEVICE_SCHEMA_JSON}.${process.pid}.tmp`;
       try {

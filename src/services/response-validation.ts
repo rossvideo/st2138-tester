@@ -83,31 +83,7 @@ async function validateItems(schema: string, payload: unknown, arrayItems = fals
 }
 
 async function validateComponentParams(payload: unknown): Promise<ResponseValidation> {
-  const items = Array.isArray(payload) ? payload : [payload];
-  const results: St2138ValidateResult[] = [];
-
-  for (const item of items) {
-    if (!item || typeof item !== 'object' || Array.isArray(item)
-      || typeof (item as any).oid !== 'string' || !(item as any).param
-      || Object.keys(item as object).some((key) => key !== 'oid' && key !== 'param')) {
-      results.push(await runSt2138ValidateResponse('component_param', item));
-      continue;
-    }
-    results.push(shapeCheck('Parameter component shape',
-      'An object with only oid and param, where oid is a string and param is present. Validate oid and param separately.', true,
-      'Expected a parameter component with oid and param.'));
-    results.push(await runSt2138ValidateResponse('fqoid', (item as any).oid));
-    results.push(await runSt2138ValidateResponse('param', (item as any).param));
-  }
-
-  const ok = results.every((result) => result.ok);
-  return {
-    schema: 'component_param',
-    ran: true,
-    ok,
-    note: ok ? `${items.length} parameter component(s) valid` : 'parameter component failed ST 2138 validation',
-    results
-  };
+  return validateItems('component_param', payload, true);
 }
 
 async function validateDeviceComponentEvent(component: any, slot: number | null): Promise<St2138ValidateResult[]> {

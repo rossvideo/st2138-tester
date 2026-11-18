@@ -53,7 +53,7 @@ test('audits member routes against a concrete FQOID and tags CRUD operations', a
       requests.push(options);
       return {
         status: 200,
-        data: { oid: 'audio/meter', param: { type: 'FLOAT32' } },
+        data: { oid: 'meter', param: { type: 'FLOAT32' } },
         config: { headers: {} },
         headers: {}
       };
@@ -113,6 +113,35 @@ test('validates manual endpoint responses against their ST 2138 schema', async (
   assert.equal(invalidDescriptor.ok, false);
   assert.equal(invalidDescriptor.validation.schema, 'component_param');
   assert.equal(invalidDescriptor.validation.ok, false);
+});
+
+test('Read Param validates the complete response against component_param', async () => {
+  for (const protocol of ['rest', 'grpc']) {
+    const validate = payload => validateEndpointResponse({
+      protocol, method: protocol === 'rest' ? 'GET' : 'GetParam',
+      endpoint: protocol === 'rest' ? '/st2138-api/v1/1/param/level' : 'CatenaService.GetParam',
+      status: protocol === 'rest' ? 200 : 0, payload
+    });
+    const valid = await validate({ oid: 'level', param: { type: 'FLOAT32' } });
+    assert.equal(valid.ok, true);
+    assert.equal(valid.results.length, 1);
+    assert.equal(valid.results[0].test.name, 'component_param');
+    assert.equal(valid.results[0].test.kind, 'JSON Schema');
+    assert.deepEqual(responseValidationOutput(valid).diagnostics, [
+      'Applying schema "component_param" to response\n✅ Passed'
+    ]);
+    for (const payload of [
+      { oid: 'level' },
+      { oid: 'level', param: { type: 'INVALID' } },
+      { oid: 'level', param: { type: 'FLOAT32' }, extra: true },
+      { oid: 'audio/level', param: { type: 'FLOAT32' } }
+    ]) {
+      const invalid = await validate(payload);
+      assert.equal(invalid.ok, false);
+      assert.equal(invalid.results[0].exitCode, 2);
+      assert.match(responseValidationOutput(invalid).diagnostics[0], /Applying schema "component_param" to response\n❌ Failed\nERROR:/);
+    }
+  }
 });
 
 test('validates automatic endpoint responses and captures an SSE event', async () => {
@@ -207,17 +236,17 @@ test('Connect diagnostics identify each streamed update and its shape result', a
   assert.match(chunks[0].result, /response chunk 1\n✅ Passed$/);
   assert.doesNotMatch(chunks[0].result, /submember/);
   assert.deepEqual(chunks[0].submembers.map(check => check.member), ['slot', 'value', 'value.oid', 'value.value']);
-  assert.match(chunks[0].submembers[2].result, /Applying "fqoid" to submember value\.oid\n✅ Passed$/);
+  assert.match(chunks[0].submembers[2].result, /Applying schema "fqoid" to submember value\.oid\n✅ Passed$/);
   assert.match(chunks[1].result, /response chunk 2\n❌ Failed$/);
-  assert.match(chunks[1].submembers[1].result, /Applying "slot_list" to submember slots_added\n❌ Failed\nERROR:/);
+  assert.match(chunks[1].submembers[1].result, /Applying schema "slot_list" to submember slots_added\n❌ Failed\nERROR:/);
   assert.deepEqual(chunks[2].submembers, []);
   const diagnostics = validationDiagnostics(validation);
-  assert.match(diagnostics[0], /^Applying tester rule "push_updates" to response chunk 1\n✅ Passed\n/);
-  assert.match(diagnostics[0], /\n\n  Applying "fqoid" to submember value\.oid\n  ✅ Passed\n\n  Applying "value" to submember value\.value\n  ✅ Passed/);
+  assert.match(diagnostics[0], /^Applying schema rule "push_updates" to response chunk 1\n✅ Passed\n/);
+  assert.match(diagnostics[0], /\n\n  Applying schema "fqoid" to submember value\.oid\n  ✅ Passed\n\n  Applying schema "value" to submember value\.value\n  ✅ Passed/);
   assert.doesNotMatch(diagnostics[0], /No other fields are allowed|"\$ref"/);
-  assert.match(diagnostics[1], /^Applying tester rule "push_updates" to response chunk 2\n❌ Failed\n/);
-  assert.match(diagnostics[1], /\n\n  Applying "slot_list" to submember slots_added\n  ❌ Failed\n  ERROR:/);
-  assert.match(diagnostics[2], /^Applying tester rule "push_updates" to response chunk 3\n❌ Failed\nERROR:/);
+  assert.match(diagnostics[1], /^Applying schema rule "push_updates" to response chunk 2\n❌ Failed\n/);
+  assert.match(diagnostics[1], /\n\n  Applying schema "slot_list" to submember slots_added\n  ❌ Failed\n  ERROR:/);
+  assert.match(diagnostics[2], /^Applying schema rule "push_updates" to response chunk 3\n❌ Failed\nERROR:/);
   assert.doesNotMatch(diagnostics[2], /to submember/);
 });
 
@@ -335,7 +364,7 @@ test('validates a language list as one ST 2138 array response', async () => {
   assert.equal(result.ok, true);
   assert.equal(result.results.length, 1);
   const [diagnostic] = responseValidationOutput(result).diagnostics;
-  assert.equal(diagnostic, 'Applying "language_list" to response\n✅ Passed');
+  assert.equal(diagnostic, 'Applying schema "language_list" to response\n✅ Passed');
   const [check] = result.results;
   const [warning] = validationDiagnostics({
     ...result,
@@ -370,7 +399,7 @@ test('shows compact validator checks and failure diagnostics in both report view
   for (const id of ['slotResults', 'endpointAudit']) {
     const markup = elements.get(id).innerHTML;
     assert.match(markup, /<summary>Validator details<\/summary>/);
-    assert.match(markup, /Applying &quot;language_list&quot; to response\n❌ Failed/);
+    assert.match(markup, /Applying schema &quot;language_list&quot; to response\n❌ Failed/);
     assert.doesNotMatch(markup, /\$ref|Validation failed\./);
     assert.match(markup, /must be string/);
   }
@@ -398,7 +427,7 @@ test('uses the protobuf ParamInfo shape for gRPC but the OpenAPI schema for REST
   assert.equal(grpcResult.schema, 'protobuf ParamInfoResponse');
   const diagnostics = responseValidationOutput(grpcResult).diagnostics.join('\n');
   assert.match(diagnostics, /Applying tester rule "ParamInfoResponse shape" to response\n✅ Passed/);
-  assert.match(diagnostics, /Applying "fqoid" to response\n✅ Passed/);
+  assert.match(diagnostics, /Applying schema "fqoid" to response\n✅ Passed/);
   assert.doesNotMatch(diagnostics, /An object with only info|Schema validation succeeded/);
   assert.equal(restResult.ok, false);
   assert.equal(restResult.schema, 'param_info_response');
