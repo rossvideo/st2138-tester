@@ -1,4 +1,5 @@
 import { runSt2138ValidateResponse, St2138ValidateResult } from '../validation/st2138-cli-validator';
+import { normalizeProtoModel, restoreIntegerChoiceDefaults, restoreGrpcComponentDefaults, restoreGrpcDescriptorDefaults } from './grpc-model';
 
 export type ResponseValidation = {
   schema: string | null;
@@ -13,6 +14,15 @@ export type ParamInfoScope = {
   recursive: boolean;
   knownOids: readonly string[];
 };
+
+export function commandComponentType(payload: unknown): string | number | undefined {
+  if (!payload || typeof payload !== 'object' || !('command' in payload)) return undefined;
+  const component = payload.command;
+  if (!component || typeof component !== 'object' || !('command' in component)) return undefined;
+  const descriptor = component.command;
+  if (!descriptor || typeof descriptor !== 'object' || !('type' in descriptor)) return undefined;
+  return typeof descriptor.type === 'string' || typeof descriptor.type === 'number' ? descriptor.type : undefined;
+}
 
 function shapeCheck(name: string, definition: string, ok: boolean, message: string, target = 'response'): St2138ValidateResult {
   return {
@@ -48,6 +58,7 @@ function validateParamInfoScope(payload: unknown[], scope: ParamInfoScope): St21
 function restResponseSchema(method: string, endpoint: string, status: number, payload: any, isStream: boolean): string | null {
   if (status < 200 || status >= 300) return 'exception';
   if (endpoint.endsWith('/health')) return 'empty';
+  if (/\/component\/[^/]+\/.+$/.test(endpoint)) return 'component_response';
   if (status === 204 || payload === undefined || payload === null || payload === '') return 'empty';
   if (/\/devices?$/.test(endpoint)) return 'slot_list';
   if (/\/st2138-api\/v1\/\d+$/.test(endpoint)) return 'device';
@@ -83,6 +94,7 @@ function grpcResponseSchema(method: string, status: number, isStream: boolean): 
     MultiSetValue: 'empty',
     UpdateSubscriptions: 'empty',
     GetParam: 'component_param',
+    GetComponent: 'component_response',
     Connect: 'push_updates',
     AddLanguage: 'empty',
     LanguagePackRequest: 'component_language_pack',
@@ -289,6 +301,7 @@ type EndpointResponse = {
   payload: unknown;
   isStream?: boolean;
   paramInfoScope?: ParamInfoScope;
+  componentRequest?: { kind?: unknown; oid?: unknown };
 };
 
 function isSuccessfulResponse(input: EndpointResponse): boolean {
@@ -357,6 +370,46 @@ async function validateResponseBody(input: EndpointResponse): Promise<ResponseVa
     payload = (payload as any).languages;
   }
   if (schema === 'empty' && (payload === undefined || payload === null || payload === '')) payload = {};
+
+  if (schema === 'component_response') {
+    if (input.protocol === 'grpc' && payload && typeof payload === 'object' && !Array.isArray(payload)) {
+      const component = normalizeProtoModel(payload);
+      restoreIntegerChoiceDefaults(component);
+      restoreGrpcComponentDefaults(component);
+      if (component.param?.param) {
+        restoreGrpcDescriptorDefaults({ params: { item: component.param.param } });
+      }
+      if (component.command?.command) {
+        restoreGrpcDescriptorDefaults({ commands: { item: component.command.command } });
+      }
+      payload = component;
+    }
+    const validation = await validateItems(schema, payload);
+    const path = input.protocol === 'rest' ? /\/component\/([^/]+)\/(.+?)(?:\?|$)/.exec(input.endpoint) : null;
+    const request = input.componentRequest || (path ? {
+      kind: decodeURIComponent(path[1]), oid: path[2].split('/').map(decodeURIComponent).join('/')
+    } : undefined);
+    if (!request) return validation;
+    const fields: Record<string, string> = {
+      PARAM: 'param', COMMAND: 'command', CONSTRAINT: 'shared_constraint', MENU: 'menu', LANGUAGE_PACK: 'language_pack'
+    };
+    const numericKinds: Record<number, string> = { 1: 'PARAM', 2: 'CONSTRAINT', 3: 'MENU', 4: 'COMMAND', 5: 'LANGUAGE_PACK' };
+    const kind = typeof request.kind === 'number' ? numericKinds[request.kind] : request.kind;
+    const field = typeof kind === 'string' ? fields[kind] : undefined;
+    const component = field && payload && typeof payload === 'object'
+      ? (payload as Record<string, any>)[field] : undefined;
+    const oid = typeof request.oid === 'string' ? request.oid : undefined;
+    const parts = oid?.split('/');
+    const expectedId = kind === 'MENU' || kind === 'LANGUAGE_PACK'
+      ? oid : parts?.[parts.length - 1];
+    const actualId = kind === 'LANGUAGE_PACK' ? component?.language : component?.oid;
+    const matches = Boolean(field && oid && component && actualId === expectedId);
+    const rule = shapeCheck('Requested component', 'The response must contain the requested component kind and identifier.',
+      matches, `Expected ${request.kind} component ${request.oid}.`);
+    return { ...validation, ok: validation.ok && matches,
+      note: matches ? validation.note : 'response does not match the requested component',
+      results: [...validation.results, rule] };
+  }
 
   const arrayItems = (schema === 'component_param' && input.endpoint.endsWith('/subscriptions'))
     || input.isStream === true

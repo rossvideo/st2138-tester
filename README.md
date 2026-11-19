@@ -69,6 +69,21 @@ against the vendored `push_updates` schema and checked by submember.
 Read Param responses are validated directly against `component_param`, including
 its `simple_oid` constraint.
 
+For REST and gRPC, the scan reads each discovered parameter, command, shared
+constraint, menu, and language pack with GetComponent. Responses are validated
+against `component_response` and checked against the requested kind and identifier.
+Each member's API checks include one GetComponent endpoint result with diagnostics
+and a manual rerun. Member API checks use a fixed display order: GetComponent,
+Param Info, Param Info stream, Param, Value, then Write Value. This does not
+change request execution order. Parameter checks and the Commands view also show a compact
+GetComponent status bar with the scan's diagnostics and request and response.
+Language-pack GetComponent results appear under **Language packs**, grouped by
+language alongside the other language-pack endpoints.
+API check cards use consistent headers with the operation, check name, resolved
+endpoint, and result, including metadata streams, node-wide checks, and languages.
+When a command's successful GetComponent response has type `EMPTY`, its
+command body input is omitted.
+
 The scan checks parameter metadata streams with recursion on and off, both
 slot-wide and for individual parameters. The report nests the two checks under
 one stream card for each target, with separate results and manual runs. REST

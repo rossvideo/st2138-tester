@@ -1,6 +1,6 @@
 import type { AxiosInstance } from 'axios';
 import type { HttpMethod, OpenApiEndpoint } from './openapi-spec';
-import { validateEndpointResponse, ParamInfoScope, ResponseValidation } from '../services/response-validation';
+import { validateEndpointResponse, commandComponentType, ParamInfoScope, ResponseValidation } from '../services/response-validation';
 import { connectStreamTransportOptions } from '../security/device-transport';
 
 /** Status that means "not implemented" per transport (lined up with Catena). */
@@ -43,6 +43,7 @@ export type EndpointAuditResult = {
   manualRequest?: unknown;
   title?: string;
   recursive?: boolean;
+  componentCommandType?: string | number;
 };
 
 export type AuditContext = {
@@ -55,6 +56,7 @@ export type AuditContext = {
   fqoid?: string;
   memberType?: string;
   memberReadOnly?: boolean;
+  componentKind?: string;
   knownParamOids?: readonly string[];
   /**
    * The device model for `sampleSlot`. No longer used to generate per-member
@@ -125,6 +127,7 @@ export function resolvePath(
 ): { resolved: string; placeholderNote: string | null } {
   let resolved = endpoint.pathTemplate;
   resolved = resolved.replace('{slot}', String(ctx.sampleSlot));
+  if (ctx.componentKind) resolved = resolved.replace('{kind}', encodeURIComponent(ctx.componentKind));
   if (ctx.fqoid) {
     resolved = resolved.replace('{fqoid}', ctx.fqoid.split('/').map(encodeURIComponent).join('/'));
   }
@@ -401,6 +404,7 @@ export type ExecutionOutcome = {
   requestPreview: string;
   responsePreview: string;
   validation: ResponseValidation | null;
+  componentCommandType?: string | number;
 };
 
 /**
@@ -514,7 +518,11 @@ export async function executeEndpoint(
     });
   }
 
-  return { status: call.status, ok, notImplemented, warning, schemaValid, note, requestPreview, responsePreview, validation };
+  return {
+    status: call.status, ok, notImplemented, warning, schemaValid, note, requestPreview, responsePreview, validation,
+    ...(ok && endpoint.pathTemplate === '/{slot}/component/{kind}/{fqoid}'
+      ? { componentCommandType: commandComponentType(call.payload) } : {})
+  };
 }
 
 export type RunAuditOptions = {
@@ -542,6 +550,7 @@ export async function runEndpointAudit(
 
   for (const endpoint of endpoints) {
     if (endpoint.pathTemplate.includes('{fqoid}') && !ctx.fqoid) continue;
+    if (endpoint.pathTemplate.includes('{kind}') && !ctx.componentKind) continue;
 
     const { resolved, placeholderNote } = resolvePath(endpoint, ctx);
     const resolvedEndpoint = `${ctx.apiPrefix}${resolved}`;

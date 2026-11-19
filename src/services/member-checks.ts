@@ -1,7 +1,7 @@
 import axios, { AxiosInstance } from 'axios';
 import { isDeepStrictEqual } from 'util';
 import { runSt2138ValidateResponse, St2138ValidateResult } from '../validation/st2138-cli-validator';
-import { validateEndpointResponse, ParamInfoScope } from './response-validation';
+import { validateEndpointResponse, commandComponentType, ParamInfoScope } from './response-validation';
 import { streamCollector, grpcDeadline } from '../security/device-transport';
 
 type DeviceMember = {
@@ -49,6 +49,26 @@ function collectMembers(model: any): DeviceMember[] {
   }
   walk(model?.params);
   return members;
+}
+
+export function collectComponents(model: any, languages: readonly string[] = []) {
+  const components: Array<{ kind: string; oid: string; memberType: string }> = collectMembers(model)
+    .map(member => ({ kind: 'PARAM', oid: member.path, memberType: 'Parameter' }));
+  for (const [field, kind, memberType] of [
+    ['commands', 'COMMAND', 'Command'],
+    ['constraints', 'CONSTRAINT', 'Constraint']
+  ]) {
+    for (const oid of Object.keys(model?.[field] || {})) components.push({ kind, oid, memberType });
+  }
+  for (const [group, value] of Object.entries(model?.menu_groups || {})) {
+    const menus = (value as { menus?: Record<string, unknown> })?.menus || {};
+    for (const menu of Object.keys(menus)) components.push({ kind: 'MENU', oid: `${group}/${menu}`, memberType: 'Menu' });
+  }
+  const packs = model?.language_packs?.packs || model?.language_packs || {};
+  for (const oid of new Set([...Object.keys(packs), ...languages])) {
+    components.push({ kind: 'LANGUAGE_PACK', oid, memberType: 'Language pack' });
+  }
+  return components;
 }
 
 function bumpValue(value: any, maxLength?: number): { changed: boolean; value: any } {
@@ -371,7 +391,8 @@ export async function runGrpcApiChecks(client: any, slot: number, model: unknown
     try {
       const raw = stream ? await grpcStream(client, method, request) : (await grpcCall(client, method, request)).response;
       const validation = await validateEndpointResponse({
-        protocol: 'grpc', method, endpoint: base.endpoint, status: 0, payload: raw, isStream: stream, paramInfoScope: scope
+        protocol: 'grpc', method, endpoint: base.endpoint, status: 0, payload: raw, isStream: stream, paramInfoScope: scope,
+        componentRequest: method === 'GetComponent' ? request as { kind: string; oid: string } : undefined
       });
       checks.push({
         ...base,
@@ -379,6 +400,7 @@ export async function runGrpcApiChecks(client: any, slot: number, model: unknown
         ok: validation.ok,
         note: validation.note,
         responsePreview: JSON.stringify(raw, null, 2),
+        ...(method === 'GetComponent' && validation.ok ? { componentCommandType: commandComponentType(raw) } : {}),
         validation
       });
     } catch (error) {
@@ -457,6 +479,12 @@ export async function runGrpcApiChecks(client: any, slot: number, model: unknown
   for (const language of languages) {
     await record('LanguagePackRequest', { slot, language }, 'Read language pack', {
       resourceGroup: 'Language packs', resourceKey: language, resourceKind: 'language-pack'
+    });
+  }
+
+  for (const component of collectComponents(model, languages)) {
+    await record('GetComponent', { slot, kind: component.kind, oid: component.oid }, 'Read component descriptor', {
+      memberType: component.memberType, oid: component.oid
     });
   }
 

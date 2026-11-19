@@ -61,6 +61,7 @@ const FALLBACK_ENDPOINTS: OpenApiEndpoint[] = [
   { pathTemplate: '/{slot}/subscriptions', method: 'PUT', isStream: false },
   { pathTemplate: '/{slot}/subscriptions/stream', method: 'GET', isStream: true },
   { pathTemplate: '/{slot}/param/{fqoid}', method: 'GET', isStream: false },
+  { pathTemplate: '/{slot}/component/{kind}/{fqoid}', method: 'GET', isStream: false, operationId: 'Component' },
   { pathTemplate: '/connect', method: 'GET', isStream: true },
   { pathTemplate: '/{slot}/language-pack/{language-code}', method: 'GET', isStream: false },
   { pathTemplate: '/{slot}/language-pack/{language-code}', method: 'POST', isStream: false },

@@ -200,7 +200,8 @@ export async function runManualEndpoint(input: ManualEndpointRequest & { request
       validation = await validateGrpcComponents(payload as any[], deviceValidation);
     } else {
       validation = await validateEndpointResponse({
-        protocol: 'grpc', method: rpcMethod, endpoint: input.endpoint, status: 0, payload, isStream, paramInfoScope
+        protocol: 'grpc', method: rpcMethod, endpoint: input.endpoint, status: 0, payload, isStream, paramInfoScope,
+        componentRequest: rpcMethod === 'GetComponent' ? request : undefined
       });
     }
     return {

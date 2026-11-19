@@ -4,10 +4,13 @@ import * as protoLoader from '@grpc/proto-loader';
 import path from 'path';
 import { runEndpointAudit } from '../openapi/endpoint-audit';
 import { getOpenApiSpec, OpenApiSpecInfo } from '../openapi/openapi-spec';
-import { runGrpcApiChecks, runGrpcMemberChecks, runRestMemberChecks } from './member-checks';
+import { collectComponents, runGrpcApiChecks, runGrpcMemberChecks, runRestMemberChecks } from './member-checks';
 import { runSt2138ValidateJsOnModel, runSt2138ValidateResponse } from '../validation/st2138-cli-validator';
 import { validateEndpointResponse, ResponseValidation } from './response-validation';
+import { normalizeProtoModel, restoreIntegerChoiceDefaults, restoreGrpcDescriptorDefaults } from './grpc-model';
 import { restTransportOptions, grpcTransport, streamCollector, mapDeviceSlots, grpcDeadline, captureGrpcConnect, DEVICE_REQUEST_TIMEOUT_MS } from '../security/device-transport';
+
+export { restoreGrpcDescriptorDefaults } from './grpc-model';
 
 type DiscoveryAttempt = {
   endpoint: string;
@@ -16,17 +19,6 @@ type DiscoveryAttempt = {
   validation?: ResponseValidation;
   error?: string;
   unreachable?: boolean;
-};
-
-const GRPC_ALARM_SEVERITY_VALUES: Record<string, number> = {
-  EMERGENCY: 0,
-  ALERT: 1,
-  CRITICAL: 2,
-  ERROR: 3,
-  WARNING: 4,
-  NOTICE: 5,
-  INFORMATIONAL: 6,
-  DEBUG: 7
 };
 
 const UNREACHABLE_NETWORK_CODES = new Set([
@@ -180,65 +172,6 @@ function assembleGrpcDevice(slot: number, components: any[]): Record<string, any
   }
 
   return model;
-}
-
-function normalizeProtoModel(value: any): any {
-  if (Array.isArray(value)) return value.map(normalizeProtoModel);
-  if (!value || typeof value !== 'object') return value;
-
-  const normalized: Record<string, any> = {};
-  for (const [key, child] of Object.entries(value)) {
-    if (key === 'kind' || child === null || child === undefined) continue;
-    normalized[key] = key === 'severity' && typeof child === 'string'
-      && Object.prototype.hasOwnProperty.call(GRPC_ALARM_SEVERITY_VALUES, child)
-      ? GRPC_ALARM_SEVERITY_VALUES[child]
-      : normalizeProtoModel(child);
-  }
-  return normalized;
-}
-
-function restoreIntegerChoiceDefaults(value: any): void {
-  if (!value || typeof value !== 'object') return;
-  if (Array.isArray(value)) {
-    value.forEach(restoreIntegerChoiceDefaults);
-    return;
-  }
-
-  const choices = value.int32_choice?.choices;
-  if (Array.isArray(choices)) {
-    for (const choice of choices) {
-      if (choice.value === undefined) choice.value = 0;
-    }
-  }
-
-  if (value.commands && typeof value.commands === 'object') {
-    for (const command of Object.values(value.commands) as Array<Record<string, any>>) {
-      command.response ??= false;
-    }
-  }
-
-  Object.values(value).forEach(restoreIntegerChoiceDefaults);
-}
-
-export function restoreGrpcDescriptorDefaults(model: Record<string, any>): void {
-  const restoreParamMap = (paramMap: any) => {
-    if (!paramMap || typeof paramMap !== 'object' || Array.isArray(paramMap)) return;
-    for (const descriptor of Object.values(paramMap) as Array<Record<string, any>>) {
-      if (!descriptor || typeof descriptor !== 'object') continue;
-      descriptor.read_only ??= false;
-      if (descriptor.params) restoreParamMap(descriptor.params);
-    }
-  };
-
-  restoreParamMap(model.params);
-  if (model.commands && typeof model.commands === 'object') {
-    for (const command of Object.values(model.commands) as Array<Record<string, any>>) {
-      if (!command || typeof command !== 'object') continue;
-      command.read_only ??= false;
-      command.response ??= false;
-      if (command.params) restoreParamMap(command.params);
-    }
-  }
 }
 
 export function grpcComponentsToDeviceModel(slot: number, components: any[]): Record<string, any> {
@@ -472,6 +405,9 @@ export async function scanRestDevice(rawUrl: string, specOverride?: OpenApiSpecI
 
   const spec = specOverride || await getOpenApiSpec();
   const endpoints = spec.endpoints.filter((endpoint) => !/\/command(?:\/|$)/i.test(endpoint.pathTemplate));
+  if (!endpoints.some(endpoint => endpoint.pathTemplate === '/{slot}/component/{kind}/{fqoid}' && endpoint.method === 'GET')) {
+    endpoints.push({ pathTemplate: '/{slot}/component/{kind}/{fqoid}', method: 'GET', isStream: false, operationId: 'Component' });
+  }
   const memberEndpoints = endpoints.filter((endpoint) =>
     endpoint.pathTemplate.includes('{fqoid}')
     && /\/param(?:-info)?\/\{fqoid\}/.test(endpoint.pathTemplate)
@@ -530,6 +466,14 @@ export async function scanRestDevice(rawUrl: string, specOverride?: OpenApiSpecI
         fqoid: member.path,
         memberType: 'Parameter',
         memberReadOnly: member.readOnly
+      }));
+    }
+
+    const componentEndpoints = slotEndpoints.filter(endpoint => endpoint.pathTemplate === '/{slot}/component/{kind}/{fqoid}');
+    for (const component of collectComponents(slotModel, languages)) {
+      endpointAudit.push(...await runEndpointAudit(client, componentEndpoints, {
+        deviceUrl, apiPrefix: spec.apiPrefix, sampleSlot: slot, sampleLanguageCode: languages[0] || '',
+        fqoid: component.oid, componentKind: component.kind, memberType: component.memberType
       }));
     }
 
@@ -630,6 +574,7 @@ export async function scanGrpcDevice(rawUrl: string, onProgress?: ScanProgress) 
       manualRequest?: unknown;
       manualBody?: unknown;
       recursive?: boolean;
+      componentCommandType?: string | number;
     }> = [];
     endpointAudit.push({
       endpoint: 'CatenaService.GetPopulatedSlots',
@@ -766,6 +711,7 @@ export async function scanGrpcDevice(rawUrl: string, onProgress?: ScanProgress) 
           operation: check.operation || 'READ',
           manualRequest: check.manualRequest,
           recursive: check.recursive,
+          componentCommandType: check.componentCommandType,
           validation: check.validation,
           resourceGroup: check.resourceGroup,
           resourceKey: check.resourceKey,

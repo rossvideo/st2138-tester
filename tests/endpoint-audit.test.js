@@ -11,10 +11,11 @@ const { Readable } = require('node:stream');
 const { runEndpointAudit } = require('../src/openapi/endpoint-audit');
 const { executeEndpoint } = require('../src/openapi/endpoint-audit');
 const { runManualEndpoint } = require('../src/services/manual-endpoint');
-const { runGrpcApiChecks } = require('../src/services/member-checks');
+const { collectComponents, runGrpcApiChecks } = require('../src/services/member-checks');
 const { validateEndpointResponse } = require('../src/services/response-validation');
 const { responseValidationOutput, validationDiagnostics } = require('../src/ui/validation.js');
 const { renderReport } = require('../src/ui/render.js');
+const { bindCommandRunner } = require('../src/ui/commands.js');
 const { scanRestDevice, scanGrpcDevice, grpcComponentsToDeviceModel, validateGrpcComponents } = require('../src/services/device-scan');
 const { executeDeviceCommand } = require('../src/services/command-execution');
 const { configureDeviceTransport } = require('../src/security/device-transport');
@@ -84,6 +85,88 @@ test('audits member routes against a concrete FQOID and tags CRUD operations', a
   assert.equal(results[0].validation.ok, true);
   assert.equal(results[1].operation, 'UPDATE');
   assert.equal(results[1].tested, false);
+});
+
+test('GetComponent audits each discovered kind over REST and gRPC', async () => {
+  const model = {
+    params: { audio: { type: 'STRUCT', params: { meter: { type: 'FLOAT32' } } } },
+    commands: { play: { type: 'EMPTY' } },
+    constraints: { range: { type: 'INT_RANGE', int32_range: { min_value: 0, max_value: 2 } } },
+    menu_groups: { main: { menus: { settings: {} } } },
+    language_packs: { packs: { en: { name: 'English' } } }
+  };
+  const components = collectComponents(model, ['en', 'fr']);
+  assert.deepEqual(components.map(({ kind, oid }) => [kind, oid]), [
+    ['PARAM', 'audio'], ['PARAM', 'audio/meter'], ['COMMAND', 'play'], ['CONSTRAINT', 'range'],
+    ['MENU', 'main/settings'], ['LANGUAGE_PACK', 'en'], ['LANGUAGE_PACK', 'fr']
+  ]);
+  const response = ({ kind, oid }) => {
+    const id = oid.split('/').at(-1);
+    if (kind === 'PARAM') return { param: { oid: id, param: { type: 'FLOAT32' } } };
+    if (kind === 'COMMAND') return { command: { oid: id, command: { type: 'EMPTY', response: false } } };
+    if (kind === 'CONSTRAINT') return { shared_constraint: { oid: id, constraint: model.constraints.range } };
+    if (kind === 'MENU') return { menu: { oid, menu: {} } };
+    return { language_pack: { language: oid, language_pack: { name: oid } } };
+  };
+  const endpoint = { pathTemplate: '/{slot}/component/{kind}/{fqoid}', method: 'GET', isStream: false, operationId: 'Component' };
+  const restRequests = [];
+  const restClient = {
+    async request({ url }) {
+      restRequests.push(new URL(url).pathname);
+      const [kind, ...parts] = new URL(url).pathname.split('/component/')[1].split('/');
+      return { status: 200, data: response({ kind, oid: parts.join('/') }) };
+    }
+  };
+  const rest = [];
+  for (const component of components) {
+    rest.push(...await runEndpointAudit(restClient, [endpoint], {
+      deviceUrl: 'http://device.test', apiPrefix: '/st2138-api/v1', sampleSlot: 2,
+      sampleLanguageCode: '', fqoid: component.oid, componentKind: component.kind, memberType: component.memberType
+    }));
+  }
+  assert.deepEqual(restRequests, components.map(({ kind, oid }) => `/st2138-api/v1/2/component/${kind}/${oid}`));
+  assert(rest.every(check => check.validation.schema === 'component_response' && check.tested));
+  assert.deepEqual(rest.filter(check => !check.ok).map(check => ({ endpoint: check.endpoint, validation: check.validation })), []);
+  assert.equal(rest.find(check => check.memberType === 'Command').componentCommandType, 'EMPTY');
+
+  const grpcRequests = [];
+  const client = {
+    ParamInfoRequest() { return Readable.from([]); },
+    GetParam({ oid }, _options, callback) { callback(null, { oid: oid.split('/').at(-1), param: { type: 'FLOAT32' } }); },
+    ListLanguages(_request, _options, callback) { callback(null, { languages: ['en', 'fr'] }); },
+    LanguagePackRequest({ language }, _options, callback) { callback(null, { language, language_pack: { name: language } }); },
+    GetComponent(request, _options, callback) { grpcRequests.push(request); callback(null, response(request)); }
+  };
+  const grpcChecks = (await runGrpcApiChecks(client, 2, model)).checks.filter(check => check.method === 'GetComponent');
+  assert.deepEqual(grpcRequests, components.map(({ kind, oid }) => ({ slot: 2, kind, oid })));
+  assert(grpcChecks.every(check => check.validation.schema === 'component_response'));
+  assert.deepEqual(grpcChecks.filter(check => !check.ok).map(check => ({ request: check.manualRequest, validation: check.validation })), []);
+  assert.equal(grpcChecks.find(check => check.memberType === 'Command').componentCommandType, 'EMPTY');
+});
+
+test('GetComponent validates the response schema and requested component for both protocols', async () => {
+  for (const protocol of ['rest', 'grpc']) {
+    const base = protocol === 'rest'
+      ? { method: 'GET', endpoint: '/st2138-api/v1/1/component/PARAM/audio/meter', status: 200 }
+      : { method: 'GetComponent', endpoint: 'CatenaService.GetComponent', status: 0, componentRequest: { kind: 'PARAM', oid: 'audio/meter' } };
+    const validate = payload => validateEndpointResponse({ protocol, ...base, payload });
+    const valid = await validate({ param: { oid: 'meter', param: { type: 'FLOAT32' } } });
+    assert.equal(valid.schema, 'component_response');
+    assert.equal(valid.ok, true);
+    assert.equal((await validate({ menu: { oid: 'audio/meter', menu: {} } })).ok, false);
+    assert.equal((await validate({ param: { oid: 'other', param: { type: 'FLOAT32' } } })).ok, false);
+    const fullOid = await validate({ param: { oid: 'audio/meter', param: { type: 'FLOAT32' } } });
+    assert.equal(fullOid.ok, false);
+    assert.match(fullOid.results[0].stdout, /must match pattern/);
+    assert.equal((await validate({ param: { oid: 'meter' } })).ok, false);
+    assert.equal((await validate(null)).ok, false);
+  }
+  const grpcCommand = await validateEndpointResponse({
+    protocol: 'grpc', method: 'GetComponent', endpoint: 'CatenaService.GetComponent', status: 0,
+    componentRequest: { kind: 'COMMAND', oid: 'play' },
+    payload: { command: { oid: 'play', command: { type: 'EMPTY' } } }
+  });
+  assert.equal(grpcCommand.ok, true);
 });
 
 test('REST audits both recursive modes for slot and member metadata streams', async () => {
@@ -537,6 +620,240 @@ test('reports passing devices separately from a failing node-wide endpoint', t =
   assert.match(elements.get('endpointAudit').innerHTML, /Node-wide endpoints/);
 });
 
+test('shows GetComponent results per member kind and slot in both protocols', t => {
+  const elements = new Map();
+  const previous = globalThis.document;
+  globalThis.document = {
+    getElementById(id) {
+      if (!elements.has(id)) elements.set(id, {});
+      return elements.get(id);
+    }
+  };
+  t.after(() => { globalThis.document = previous; });
+
+  for (const protocol of ['rest', 'grpc']) {
+    const component = (slot, memberType, oid, tested, ok) => ({
+      endpoint: protocol === 'grpc' ? 'CatenaService.GetComponent'
+        : `/st2138-api/v1/${slot}/component/${memberType}/${oid}`,
+      pathTemplate: protocol === 'grpc' ? 'CatenaService.GetComponent' : '/{slot}/component/{kind}/{fqoid}',
+      method: protocol === 'grpc' ? 'GetComponent' : 'GET',
+      slot, memberType, oid, tested, ok, note: '<diagnostic>',
+      requestPreview: 'request', responsePreview: '<response>'
+    });
+    const checks = [
+      component(1, 'Parameter', 'shared', true, true),
+      component(1, 'Command', 'shared', true, false),
+      component(1, 'Constraint', 'range', true, true),
+      component(1, 'Menu', 'main/settings', true, false),
+      component(1, 'Language pack', 'en', false, false),
+      { endpoint: protocol === 'grpc' ? 'CatenaService.LanguagePackRequest' : '/st2138-api/v1/1/language-pack/en',
+        pathTemplate: protocol === 'grpc' ? 'CatenaService.LanguagePackRequest' : '/{slot}/language-pack/{language-code}',
+        method: protocol === 'grpc' ? 'LanguagePackRequest' : 'GET', slot: 1, tested: true, ok: true,
+        resourceGroup: 'Language packs', resourceKind: 'language-pack', resourceKey: 'en' },
+      component(2, 'Command', 'shared', true, true)
+    ];
+    renderReport({
+      protocol, deviceUrl: 'http://node.test', scannedAt: new Date().toISOString(),
+      summary: { total: 2, passed: 1, failed: 1 },
+      slots: [
+        { slot: 1, ok: false, model: { commands: { shared: { type: 'EMPTY' }, missing: { type: 'EMPTY' } } },
+          memberChecks: { checks: [{ path: 'shared', ok: true, steps: [] }] } },
+        { slot: 2, ok: true, model: { commands: { shared: { type: 'EMPTY' } } } }
+      ],
+      endpointAudit: checks
+    });
+    const commands = elements.get('commandGroups').innerHTML;
+    const first = commands.split('data-slot="1" data-oid="shared"')[1].split('</form>')[0];
+    const missing = commands.split('data-slot="1" data-oid="missing"')[1].split('</form>')[0];
+    const second = commands.split('data-slot="2" data-oid="shared"')[1].split('</form>')[0];
+    assert.match(first, /component-status fail">[\s\S]*?<span>GetComponent<\/span><strong>FAIL<\/strong>/);
+    assert.match(first, /&lt;diagnostic&gt;/);
+    assert.match(first, /&lt;response&gt;/);
+    assert.match(missing, /component-status not-run"><span>GetComponent<\/span><strong>NOT RUN<\/strong>/);
+    assert.match(second, /component-status pass">[\s\S]*?<span>GetComponent<\/span><strong>PASS<\/strong>/);
+    assert.match(elements.get('slotResults').innerHTML,
+      /member-path">shared<\/span>[\s\S]*?component-status pass">[\s\S]*?GetComponent<\/span><strong>PASS<\/strong>/);
+
+    const api = elements.get('endpointAudit').innerHTML;
+    assert.doesNotMatch(api, /component-status/);
+    assert.equal((api.match(/class="endpoint-result /g) || []).length, checks.length);
+    assert.equal((api.match(/class="endpoint-manual-form"/g) || []).length, checks.length);
+    for (const [memberType, oid, status] of [
+      ['Parameter', 'shared', 'pass'], ['Command', 'shared', 'fail'], ['Constraint', 'range', 'pass'],
+      ['Menu', 'main/settings', 'fail']
+    ]) {
+      const group = api.split(`>${memberType}</span>`)[1].split('endpoint-member-type')[0];
+      assert(group.includes(`class="member-path">${oid}</span>`), `${protocol} ${memberType} member`);
+      assert(group.includes(`class="endpoint-result ${status}"`), `${protocol} ${memberType} status`);
+    }
+    assert.doesNotMatch(api, /<summary><span>Language pack<\/span>/);
+    assert.equal((api.match(/<summary><span>Language packs<\/span>/g) || []).length, 1);
+    const language = api.split('class="endpoint-language-group"')[1].split('endpoint-member-type')[0];
+    assert.match(language, /<summary><span>en<\/span>/);
+    assert.equal((language.match(/class="endpoint-result /g) || []).length, 2);
+    assert.match(language, /class="endpoint-result not-run"/);
+    assert.match(language, /class="endpoint-result pass"/);
+    assert(language.includes(checks[4].endpoint));
+    assert(language.includes(checks[5].endpoint));
+  }
+});
+
+test('uses a fixed member API check order regardless of result arrival order', t => {
+  const elements = new Map();
+  const previous = globalThis.document;
+  globalThis.document = {
+    getElementById(id) {
+      if (!elements.has(id)) elements.set(id, {});
+      return elements.get(id);
+    }
+  };
+  t.after(() => { globalThis.document = previous; });
+  for (const protocol of ['rest', 'grpc']) {
+    const definitions = [
+      ['GetComponent', '/component/PARAM/meter', '/component/{kind}/{fqoid}', false],
+      ['ParamInfoRequest', '/param-info/meter', '/param-info/{fqoid}', false],
+      ['ParamInfoRequest', '/param-info/meter/stream', '/param-info/{fqoid}/stream', true],
+      ['GetParam', '/param/meter', '/param/{fqoid}', false],
+      ['GetValue', '/value/meter', '/value/{fqoid}', false],
+      ['SetValue', '/value/meter', '/value/{fqoid}', false]
+    ];
+    const checks = definitions.map(([method, path, template, isStream]) => ({
+      endpoint: protocol === 'grpc' ? `CatenaService.${method}` : `/st2138-api/v1/1${path}`,
+      pathTemplate: protocol === 'grpc' ? `CatenaService.${method}` : `/{slot}${template}`,
+      method: protocol === 'grpc' ? `CatenaService.${method}` : method === 'SetValue' ? 'PUT' : 'GET',
+      isStream, ...(isStream ? { recursive: false } : {}),
+      slot: 1, oid: 'meter', memberType: 'Parameter', tested: true, ok: true
+    }));
+    for (const order of [[5, 3, 1, 4, 2, 0], [4, 2, 0, 5, 3, 1]]) {
+      const endpointAudit = order.map(index => checks[index]);
+      renderReport({
+        protocol, deviceUrl: 'http://node.test', scannedAt: new Date().toISOString(),
+        summary: { total: 1, passed: 1, failed: 0 }, slots: [{ slot: 1, ok: true }], endpointAudit
+      });
+      const forms = [...elements.get('endpointAudit').innerHTML.matchAll(
+        /class="endpoint-manual-form" data-protocol="[^"]*" data-method="([^"]*)" data-endpoint="([^"]*)"[^>]*data-stream="([^"]*)"/g
+      )].map(([, method, endpoint, stream]) => [method, endpoint, stream]);
+      assert.deepEqual(forms, checks.map(check => [check.method, check.endpoint, String(check.isStream)]), protocol);
+      assert.deepEqual(endpointAudit, order.map(index => checks[index]), 'does not reorder scan results');
+    }
+  }
+});
+
+test('uses consistent API card headers for metadata streams, node-wide checks and languages', t => {
+  const elements = new Map();
+  const previous = globalThis.document;
+  globalThis.document = {
+    getElementById(id) {
+      if (!elements.has(id)) elements.set(id, {});
+      return elements.get(id);
+    }
+  };
+  t.after(() => { globalThis.document = previous; });
+  for (const protocol of ['rest', 'grpc']) {
+    const grpcProtocol = protocol === 'grpc';
+    const entry = (rpc, path, extra = {}) => ({
+      endpoint: grpcProtocol ? `CatenaService.${rpc}` : `/st2138-api/v1${path}`,
+      pathTemplate: grpcProtocol ? `CatenaService.${rpc}` : path.replace('/0/', '/{slot}/'),
+      method: grpcProtocol ? rpc : 'GET', tested: true, ok: true, slot: 0, ...extra
+    });
+    const checks = [
+      entry('GetPopulatedSlots', '/devices', { slot: null }),
+      entry('ParamInfoRequest', '/0/param-info/counter/stream', {
+        isStream: true, recursive: false, memberType: 'Parameter', oid: 'counter'
+      }),
+      entry('ListLanguages', '/0/languages', { resourceGroup: 'Language packs', resourceKind: 'languages' }),
+      entry('LanguagePackRequest', '/0/language-pack/en', {
+        resourceGroup: 'Language packs', resourceKind: 'language-pack', resourceKey: 'en'
+      })
+    ];
+    renderReport({
+      protocol, deviceUrl: 'http://node.test', scannedAt: new Date().toISOString(),
+      summary: { total: 1, passed: 1, failed: 0 }, slots: [{ slot: 0, ok: true }], endpointAudit: checks
+    });
+    const api = elements.get('endpointAudit').innerHTML;
+    const headers = [...api.matchAll(
+      /<summary><span class="endpoint-method">([^<]+)<\/span><span class="endpoint-path">([^<]+)<small>([^<]+)<\/small><\/span><strong>PASS<\/strong><\/summary>/g
+    )];
+    assert.equal(headers.length, 5, `${protocol}: four cards and one recursion variant`);
+    for (const check of checks) {
+      const header = headers.find(([, , title, path]) => path === check.endpoint && !title.startsWith('Recursive:'));
+      assert(header, `${protocol}: consistent header for ${check.endpoint}`);
+      assert.equal(header[1], check.method);
+      assert.notEqual(header[2], check.endpoint);
+      assert.doesNotMatch(header[2], /\{slot\}|\/st2138-api/);
+    }
+    assert.equal((api.match(/class="endpoint-manual-form"/g) || []).length, 4);
+    assert.equal((api.match(/data-param-info-stream/g) || []).length, 1);
+  }
+});
+
+test('hides the command body only for a matching successful EMPTY GetComponent response', t => {
+  const elements = new Map();
+  const previous = globalThis.document;
+  globalThis.document = {
+    getElementById(id) {
+      if (!elements.has(id)) elements.set(id, {});
+      return elements.get(id);
+    }
+  };
+  t.after(() => { globalThis.document = previous; });
+  for (const protocol of ['rest', 'grpc']) {
+    const component = (slot, oid, type, ok = true) => ({
+      endpoint: protocol === 'grpc' ? 'CatenaService.GetComponent' : `/st2138-api/v1/${slot}/component/COMMAND/${oid}`,
+      pathTemplate: protocol === 'grpc' ? 'CatenaService.GetComponent' : '/{slot}/component/{kind}/{fqoid}',
+      method: protocol === 'grpc' ? 'GetComponent' : 'GET', memberType: 'Command', slot, oid,
+      tested: true, ok, componentCommandType: type
+    });
+    const commands = { empty: { type: 'STRING' }, numeric: { type: 'STRING' }, value: { type: 'EMPTY' },
+      failed: { type: 'EMPTY' }, missing: { type: 'EMPTY' } };
+    renderReport({
+      protocol, deviceUrl: 'http://node.test', scannedAt: new Date().toISOString(),
+      summary: { total: 2, passed: 1, failed: 1 },
+      slots: [{ slot: 1, ok: true, model: { commands } }, { slot: 2, ok: false, model: { commands: { empty: { type: 'STRING' } } } }],
+      endpointAudit: [
+        component(1, 'empty', 'EMPTY'), component(1, 'numeric', 1), component(1, 'value', 'STRING'),
+        component(1, 'failed', 'EMPTY', false), component(2, 'empty', 'STRING')
+      ]
+    });
+    const html = elements.get('commandGroups').innerHTML;
+    const form = (slot, oid) => html.split(`data-slot="${slot}" data-oid="${oid}"`)[1].split('</form>')[0];
+    for (const oid of ['empty', 'numeric']) {
+      assert.doesNotMatch(form(1, oid), /Command body|<textarea/);
+      assert.match(form(1, oid), /Run command/);
+    }
+    for (const oid of ['value', 'failed', 'missing']) assert.match(form(1, oid), /<textarea/);
+    assert.match(form(2, 'empty'), /<textarea/);
+  }
+});
+
+test('runs a command without a body input', async t => {
+  const previousDocument = globalThis.document;
+  const previousFetch = globalThis.fetch;
+  let submit;
+  let sent;
+  globalThis.document = { getElementById: () => ({ addEventListener(_event, listener) { submit = listener; } }) };
+  globalThis.fetch = async (_url, options) => {
+    sent = JSON.parse(options.body);
+    return { ok: true, headers: { get: () => 'application/json' }, json: async () => ({ ok: true, response: {} }) };
+  };
+  t.after(() => { globalThis.document = previousDocument; globalThis.fetch = previousFetch; });
+  const status = { dataset: {} };
+  const output = { dataset: {}, hidden: true };
+  const button = {};
+  const form = {
+    dataset: { slot: '1', oid: 'empty' },
+    querySelector(selector) {
+      return { '.command-body': null, '.command-status': status, '.command-response': output, 'button[type="submit"]': button }[selector];
+    }
+  };
+  bindCommandRunner(() => ({ protocol: 'grpc', url: 'http://node.test' }));
+  await submit({ target: { closest: () => form }, preventDefault() {} });
+  assert.equal(Object.hasOwn(sent, 'body'), false);
+  assert.equal(sent.oid, 'empty');
+  assert.equal(status.textContent, 'Command completed');
+  assert.equal(button.disabled, false);
+});
+
 test('nests recursive REST and gRPC checks under one stream card per target', t => {
   const elements = new Map();
   const previous = globalThis.document;
@@ -644,6 +961,15 @@ test('runs a manual gRPC endpoint and validates its response', async (context) =
       call.write({ info: { oid: 'audio', type: 'STRUCT' } });
       call.write({ info: { oid: 'audio/meter', type: 'FLOAT32' } });
       call.end();
+    },
+    GetComponent(call, callback) {
+      if (call.request.kind === 'CONSTRAINT') {
+        callback(null, { shared_constraint: { oid: call.request.oid, constraint: {
+          type: 'INT_RANGE', int32_range: { min_value: 0, max_value: 2 }
+        } } });
+      } else {
+        callback(null, { command: { oid: call.request.oid, command: { type: 'EMPTY', response: false } } });
+      }
     }
   });
   const port = await new Promise((resolve, reject) => {
@@ -682,6 +1008,24 @@ test('runs a manual gRPC endpoint and validates its response', async (context) =
   const staleReport = await runManualEndpoint({ ...metadataInput, knownParamOids: undefined });
   assert.equal(staleReport.ok, false);
   assert.match(staleReport.error, /Refresh the page and run a new scan/);
+
+  const component = await runManualEndpoint({
+    protocol: 'grpc', url: `http://127.0.0.1:${port}`, method: 'READ',
+    endpoint: 'CatenaService.GetComponent', slot: 0, body: { kind: 'COMMAND', oid: 'play' }
+  });
+  assert.equal(component.ok, true);
+  assert.equal(component.validation.schema, 'component_response');
+  const constraint = await runManualEndpoint({
+    protocol: 'grpc', url: `http://127.0.0.1:${port}`, method: 'READ',
+    endpoint: 'CatenaService.GetComponent', slot: 0, body: { kind: 2, oid: 'range' }
+  });
+  assert.equal(constraint.ok, true);
+  const wrongKind = await runManualEndpoint({
+    protocol: 'grpc', url: `http://127.0.0.1:${port}`, method: 'READ',
+    endpoint: 'CatenaService.GetComponent', slot: 0, body: { kind: 'PARAM', oid: 'play' }
+  });
+  assert.equal(wrongKind.ok, false);
+  assert.match(wrongKind.validation.results.at(-1).stdout, /Expected PARAM component play/);
 
   configureDeviceTransport('synthetic.payload.signature');
   context.after(() => configureDeviceTransport());
@@ -722,6 +1066,67 @@ test('REST discovery, model reads, API audits and commands retain optional JWT a
   assert(requests.some(request => request.url.includes('/command/')));
   assert(requests.every(request => request.authorization === 'Bearer synthetic.payload.signature'));
   assert.equal(JSON.stringify(report).includes('synthetic.payload.signature'), false);
+});
+
+test('REST scans and manual reruns exercise GetComponent even with a fallback specification', async context => {
+  const requests = [];
+  const server = http.createServer((request, response) => {
+    requests.push(request.url);
+    response.writeHead(200, { 'Content-Type': 'application/json' });
+    if (request.url.endsWith('/devices')) response.end(JSON.stringify({ slots: [1] }));
+    else if (request.url.endsWith('/1')) response.end(JSON.stringify({
+      slot: 1, params: {}, commands: { play: { type: 'EMPTY', response: false } }
+    }));
+    else if (request.url.endsWith('/languages')) response.end(JSON.stringify([]));
+    else if (request.url.endsWith('/component/COMMAND/play')) {
+      response.end(JSON.stringify({ command: { oid: 'play', command: { type: 'EMPTY', response: false } } }));
+    } else response.end('{}');
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  context.after(() => new Promise(resolve => server.close(resolve)));
+  const url = `http://127.0.0.1:${server.address().port}`;
+  const report = await scanRestDevice(url, {
+    apiPrefix: '/st2138-api/v1', source: 'test', loadedAt: new Date().toISOString(), endpoints: []
+  });
+  const check = report.endpointAudit.find(item => item.endpoint.endsWith('/component/COMMAND/play'));
+  assert(check);
+  assert.equal(check.ok, true);
+  assert.equal(check.validation.schema, 'component_response');
+  assert.equal(check.componentCommandType, 'EMPTY');
+  const manual = await runManualEndpoint({ protocol: 'rest', url, method: 'GET', endpoint: check.endpoint, slot: 1 });
+  assert.equal(manual.ok, true);
+  assert.equal(requests.filter(path => path.endsWith('/component/COMMAND/play')).length, 2);
+});
+
+test('gRPC scans retain the command type from GetComponent', async context => {
+  const protoDirectory = path.resolve(__dirname, '../vendor/st2138-a/interface/proto');
+  const definition = protoLoader.loadSync(path.join(protoDirectory, 'service.proto'), {
+    includeDirs: [protoDirectory], keepCase: true, longs: String, enums: String, defaults: false, oneofs: false
+  });
+  const service = grpc.loadPackageDefinition(definition).st2138.CatenaService;
+  const server = new grpc.Server();
+  server.addService(service.service, {
+    GetPopulatedSlots(_call, callback) { callback(null, { slots: [0] }); },
+    Connect(call) { call.end(); },
+    DeviceRequest(call) {
+      call.write({ command: { oid: 'play', command: { type: 'EMPTY', response: false } } });
+      call.end();
+    },
+    ParamInfoRequest(call) { call.end(); },
+    ListLanguages(_call, callback) { callback(null, { languages: [] }); },
+    GetComponent(call, callback) {
+      callback(null, { command: { oid: call.request.oid, command: { type: 'EMPTY', response: false } } });
+    }
+  });
+  const port = await new Promise((resolve, reject) => server.bindAsync(
+    '127.0.0.1:0', grpc.ServerCredentials.createInsecure(), (error, boundPort) => error ? reject(error) : resolve(boundPort)
+  ));
+  context.after(() => new Promise(resolve => server.tryShutdown(resolve)));
+  const report = await scanGrpcDevice(`http://127.0.0.1:${port}`);
+  const check = report.endpointAudit.find(item => item.endpoint === 'CatenaService.GetComponent' && item.oid === 'play');
+  assert(check);
+  assert.equal(check.ok, true);
+  assert.equal(check.componentCommandType, 'EMPTY');
 });
 
 test('REST discovery reports a JWT-required error when the device returns unauthorized', async context => {

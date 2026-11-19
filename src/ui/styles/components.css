@@ -41,6 +41,16 @@
 .readonly-tag { display: inline-block; padding: 2px 5px; color: #59675f; border: 1px solid #aebbb2; font: 8px var(--mono); font-weight: 700; white-space: nowrap; }
 .member-check-details { padding: 0 0 10px 16px; }
 .member-check-details > p { margin: 0 0 8px; color: var(--muted); font-size: 11px; }
+.component-status { margin: 0 0 10px; border: 1px solid var(--line); background: #fafbf8; font: 10px var(--mono); }
+.component-status > summary, div.component-status { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 9px 10px; }
+.component-status > summary { cursor: pointer; }
+.component-status strong { font: inherit; font-weight: 700; }
+.component-status.pass strong { color: var(--forest); }
+.component-status.fail strong { color: #a83221; }
+.component-status.not-run strong { color: var(--muted); }
+.component-status-details { padding: 0 10px 10px; }
+.component-status-details > p { color: var(--muted); font-size: 11px; }
+.component-status-details > details { margin-bottom: 10px; }
 .member-step { margin-top: 5px; border: 1px solid #e1e7e1; background: #fafbf8; }
 .member-step > summary { display: flex; justify-content: space-between; gap: 12px; padding: 7px 9px; cursor: pointer; font: 9px var(--mono); list-style-position: inside; text-transform: capitalize; }
 .member-step pre { margin: 0; border-top: 1px solid #e1e7e1; }

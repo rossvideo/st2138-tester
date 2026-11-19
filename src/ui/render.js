@@ -28,7 +28,29 @@ function validationMarkup(validation, expandable = false) {
   return summary + (details ? `<pre>${escapeHtml(details)}</pre>` : '');
 }
 
-function memberCheckMarkup(check) {
+function componentCheck(entries, memberType, oid) {
+  return entries.find(entry => entry.memberType === memberType && entry.oid === oid
+    && (entry.pathTemplate === '/{slot}/component/{kind}/{fqoid}'
+      || entry.endpoint === 'CatenaService.GetComponent'));
+}
+
+function componentStatusMarkup(check) {
+  const state = !check?.tested ? 'not-run' : check.ok ? 'pass' : 'fail';
+  const label = state === 'not-run' ? 'NOT RUN' : state === 'pass' ? 'PASS' : 'FAIL';
+  const heading = `<span>GetComponent</span><strong>${label}</strong>`;
+  if (!check?.tested) return `<div class="component-status ${state}">${heading}</div>`;
+  const validations = (Array.isArray(check.validation) ? check.validation : [check.validation]).filter(Boolean);
+  return `<details class="component-status ${state}">
+    <summary>${heading}</summary>
+    <div class="component-status-details">
+      ${check.note ? `<p>${escapeHtml(check.note)}</p>` : ''}
+      ${validatorDetails(validations)}
+      <div class="endpoint-previews"><div><h3>Request</h3><pre>${escapeHtml(check.requestPreview || '(not sent)')}</pre></div><div><h3>Response</h3><pre>${escapeHtml(check.responsePreview || '(not returned)')}</pre></div></div>
+    </div>
+  </details>`;
+}
+
+function memberCheckMarkup(check, slotEndpoints) {
   const steps = (check.steps || []).map((step) => {
     const requestMethod = String(step.request?.method || '');
     const grpcMethod = requestMethod.match(/CatenaService\.([^.]+)/)?.[1];
@@ -48,7 +70,7 @@ function memberCheckMarkup(check) {
   }).join('');
   return `<details class="member-check ${check.readOnly ? 'is-read-only' : ''}">
     <summary><span class="member-path">${escapeHtml(check.path)}</span><span class="member-labels">${check.readOnly ? '<span class="readonly-tag">READ ONLY</span>' : ''}<span class="${check.ok ? 'pass-text' : 'fail-text'}">${escapeHtml(String(check.outcome || '').toUpperCase())}</span></span></summary>
-    <div class="member-check-details"><p>${escapeHtml(check.reason || '')}</p>${steps}</div>
+    <div class="member-check-details">${componentStatusMarkup(componentCheck(slotEndpoints, 'Parameter', check.path))}<p>${escapeHtml(check.reason || '')}</p>${steps}</div>
   </details>`;
 }
 
@@ -65,6 +87,8 @@ function apiEndpointCheckMarkup(endpoint, variant = false) {
     : endpoint.method;
   const restMethod = endpoint.pathTemplate?.includes('/param-info')
     ? 'GetParamInfo'
+    : endpoint.pathTemplate?.includes('/component/{kind}/')
+      ? 'GetComponent'
     : endpoint.pathTemplate?.includes('/param/{fqoid}')
       ? 'GetParam'
       : endpoint.pathTemplate?.includes('/value/{fqoid}')
@@ -112,7 +136,7 @@ function slotResultMarkup(slot, slotEndpoints) {
         ${validationMarkup(validation)}
         ${slot.error ? `<p class="fail-text">${escapeHtml(slot.error)}</p>` : ''}
         <details class="validation-group parameter-validation-group"><summary><span>Parameter checks</span><span>${memberSummary ? `${memberSummary.passed} passed · ${memberSummary.failed} failed` : `${checks.length} checks`}</span></summary>
-          <div class="validation-group-content">${checks.length ? checks.map(memberCheckMarkup).join('') : '<p class="quiet-text">No parameter checks were returned.</p>'}</div>
+          <div class="validation-group-content">${checks.length ? checks.map(check => memberCheckMarkup(check, slotEndpoints)).join('') : '<p class="quiet-text">No parameter checks were returned.</p>'}</div>
         </details>
         <details class="validation-group api-validation-group"><summary><span>API endpoints</span>${apiSummary}</summary>
           <div class="validation-group-content">${apiChecks.length ? endpointListMarkup(apiChecks, true) : `<p class="quiet-text">No API endpoint checks were returned. ${endpointSummary.passed} tested endpoint checks passed; ${endpointSummary.failed} failed.</p>`}</div>
@@ -159,8 +183,27 @@ function slotDeviceTitle(slot) {
   return name ? `Slot ${slot.slot} · ${name}` : `Slot ${slot.slot}`;
 }
 
+function endpointTitle(endpoint) {
+  if (endpoint.title) return endpoint.title;
+  const path = endpoint.pathTemplate || endpoint.endpoint || '';
+  const action = ({ GET: 'Read', POST: 'Create', PUT: 'Update', PATCH: 'Update', DELETE: 'Delete' })[endpoint.method];
+  if (path.includes('/component/')) return 'Read component descriptor';
+  if (path.includes('/param-info/')) return endpoint.isStream ? 'List parameter metadata (stream)' : 'Read parameter metadata';
+  if (path.includes('/language-pack/')) return `${action || 'Read'} language pack`;
+  if (path.endsWith('/languages')) return 'List supported languages';
+  if (path.endsWith('/health')) return 'Check node health';
+  if (/\/devices?$/.test(path)) return 'Discover populated slots';
+  if (path.endsWith('/connect')) return 'Open update stream';
+  const rpc = endpoint.endpoint?.match(/^CatenaService\.([A-Za-z]+)/)?.[1];
+  return rpc ? rpc.replace(/([a-z])([A-Z])/g, '$1 $2') : `${action || endpoint.method} endpoint`;
+}
+
+function endpointHeaderMarkup(endpoint, title, label) {
+  return `<span class="endpoint-method">${escapeHtml(endpoint.operation || endpoint.method)}</span><span class="endpoint-path">${escapeHtml(title)}<small>${escapeHtml(endpoint.endpoint)}</small>${endpoint.readOnly ? '<small class="readonly-tag">READ ONLY</small>' : ''}</span><strong>${label}</strong>`;
+}
+
 function endpointMarkup(endpoint, variant = false) {
-  const title = variant ? recursionLabel(endpoint) : endpoint.title || endpoint.pathTemplate || endpoint.endpoint;
+  const title = variant ? recursionLabel(endpoint) : endpointTitle(endpoint);
   const status = !endpoint.tested ? 'not-run' : endpoint.ok ? 'pass' : 'fail';
   const label = !endpoint.tested ? 'NOT RUN' : endpoint.ok ? (endpoint.warning ? 'WARN' : 'PASS') : 'FAIL';
   const bodyCapable = endpoint.protocol === 'grpc' || ['POST', 'PUT', 'PATCH'].includes(endpoint.method);
@@ -179,7 +222,7 @@ function endpointMarkup(endpoint, variant = false) {
       ${bodyCapable ? `<label class="field-label">Request body <span class="label-optional">(optional JSON)</span></label><textarea class="endpoint-manual-body" spellcheck="false" placeholder="{}">${escapeHtml(body)}</textarea>` : ''}
       <div class="endpoint-manual-actions"><button class="outline-button" type="submit">Run manually <span aria-hidden="true">↗</span></button><span class="endpoint-manual-status" role="status" aria-live="polite"></span></div><pre class="endpoint-manual-response" hidden></pre>
     </form>`;
-  return `<details class="endpoint-result ${status}"><summary><span class="endpoint-method">${escapeHtml(endpoint.operation || endpoint.method)}</span><span class="endpoint-path">${escapeHtml(title)}${endpoint.title ? `<small>${escapeHtml(endpoint.endpoint)}</small>` : ''}${endpoint.readOnly ? '<small class="readonly-tag">READ ONLY</small>' : ''}</span><strong>${label}</strong></summary>
+  return `<details class="endpoint-result ${status}"><summary>${endpointHeaderMarkup(endpoint, title, label)}</summary>
     <div class="endpoint-diagnostics">${endpoint.note ? `<p>${escapeHtml(endpoint.note)}</p>` : ''}
       <div class="endpoint-previews"><div><h3>Request</h3><pre>${escapeHtml(endpoint.requestPreview)}</pre></div><div><h3>Response</h3><pre>${escapeHtml(endpoint.responsePreview)}</pre></div></div>
       ${validationStatus ? `<div class="endpoint-validation ${validationOk ? 'pass-text' : validationRan ? 'fail-text' : 'quiet-text'}">ST 2138: ${escapeHtml(validationStatus)}${validatorDetails(validations)}</div>` : ''}${manualForm}
@@ -189,6 +232,17 @@ function endpointMarkup(endpoint, variant = false) {
 function endpointTotals(entries) {
   const tested = entries.filter((entry) => entry.tested);
   return { passed: tested.filter((entry) => entry.ok).length, failed: tested.filter((entry) => !entry.ok).length, skipped: entries.length - tested.length };
+}
+
+function memberEndpointOrder(endpoint) {
+  const method = String(endpoint.method || '').replace(/^CatenaService\./, '');
+  const path = endpoint.pathTemplate || '';
+  if (method === 'GetComponent' || path.includes('/component/')) return 0;
+  if (method === 'ParamInfoRequest' || path.includes('/param-info/')) return endpoint.isStream ? 2 : 1;
+  if (method === 'GetParam' || path.includes('/param/')) return 3;
+  if (method === 'GetValue' || (path.includes('/value/') && method === 'GET')) return 4;
+  if (method === 'SetValue' || (path.includes('/value/') && method === 'PUT')) return 5;
+  return 6;
 }
 
 function endpointListMarkup(entries, diagnosticsOnly = false) {
@@ -204,15 +258,13 @@ function endpointListMarkup(entries, diagnosticsOnly = false) {
   return Array.from(groups.values(), group => {
     const [endpoint] = group;
     if (typeof endpoint.recursive !== 'boolean') return render(endpoint);
-    const title = endpoint.protocol === 'grpc'
-      ? `${endpoint.oid ? `${endpoint.oid} - ` : ''}ParamInfoRequest (stream)`
-      : endpoint.endpoint.split('?')[0].replace(/^\/st2138-api\/v1(?=\/)/, '');
+    const title = endpointTitle(endpoint);
     const totals = endpointTotals(group);
     const status = totals.failed ? 'fail' : totals.skipped ? 'not-run' : 'pass';
     const label = totals.failed ? 'FAIL' : totals.skipped ? 'NOT RUN' : group.some(entry => entry.warning) ? 'WARN' : 'PASS';
     const header = diagnosticsOnly
       ? `<span class="member-path">${escapeHtml(title)}</span><strong class="${totals.failed ? 'fail-text' : totals.skipped ? 'quiet-text' : 'pass-text'}">${label}</strong>`
-      : `<span class="endpoint-method">${escapeHtml(endpoint.protocol === 'grpc' ? endpoint.operation || 'READ' : endpoint.method)}</span><span class="endpoint-path">${escapeHtml(title)}</span><strong>${label}</strong>`;
+      : endpointHeaderMarkup({ ...endpoint, endpoint: endpoint.endpoint.split('?')[0] }, title, label);
     return `<details class="${diagnosticsOnly ? 'member-check' : `endpoint-result ${status}`} param-info-stream-group"><summary>${header}</summary><div class="param-info-stream-variants">${group.map(entry => render(entry, true)).join('')}</div></details>`;
   }).join('');
 }
@@ -229,7 +281,7 @@ function memberTypeMarkup(memberType, entries) {
     group.push(entry);
     byOid.set(entry.oid, group);
   }
-  return `<details class="endpoint-member-type" open><summary><span>${escapeHtml(memberType)}</span>${endpointCountsMarkup(entries)}</summary><div class="endpoint-member-oids">${Array.from(byOid, ([oid, operations]) => `<details class="endpoint-member-oid" open><summary><span class="member-path">${escapeHtml(oid)}</span>${endpointCountsMarkup(operations)}</summary><div class="member-crud-list">${endpointListMarkup(operations)}</div></details>`).join('')}</div></details>`;
+  return `<details class="endpoint-member-type" open><summary><span>${escapeHtml(memberType)}</span>${endpointCountsMarkup(entries)}</summary><div class="endpoint-member-oids">${Array.from(byOid, ([oid, operations]) => `<details class="endpoint-member-oid" open><summary><span class="member-path">${escapeHtml(oid)}</span>${endpointCountsMarkup(operations)}</summary><div class="member-crud-list">${endpointListMarkup([...operations].sort((a, b) => memberEndpointOrder(a) - memberEndpointOrder(b)))}</div></details>`).join('')}</div></details>`;
 }
 
 function resourceGroupMarkup(title, entries) {
@@ -238,11 +290,11 @@ function resourceGroupMarkup(title, entries) {
 
 function languagePackGroupMarkup(entries) {
   const languages = entries.filter((entry) => entry.resourceKind === 'languages' || /\/languages(?:\?|$)/.test(entry.endpoint));
-  const packs = entries.filter((entry) => entry.resourceKind === 'language-pack' || /\/language-pack(?:\/|$)/.test(entry.endpoint));
+  const packs = entries.filter((entry) => entry.memberType === 'Language pack' || entry.resourceKind === 'language-pack' || /\/language-pack(?:\/|$)/.test(entry.endpoint));
   const packsByLanguage = new Map();
   for (const entry of packs) {
     const match = entry.endpoint.match(/\/language-pack\/([^/?]+)/);
-    const language = entry.resourceKey || match?.[1] || 'No language advertised';
+    const language = entry.resourceKey || (entry.memberType === 'Language pack' ? entry.oid : undefined) || match?.[1] || 'No language advertised';
     const group = packsByLanguage.get(language) || [];
     group.push(entry);
     packsByLanguage.set(language, group);
@@ -255,9 +307,9 @@ function languagePackGroupMarkup(entries) {
 }
 
 function scopeGroupMarkup(title, entries) {
-  const members = entries.filter((entry) => entry.memberType);
   const subscriptionEntries = entries.filter((entry) => entry.resourceGroup === 'Subscriptions' || entry.pathTemplate.includes('/subscriptions'));
-  const languageEntries = entries.filter((entry) => entry.resourceGroup === 'Language packs' || entry.pathTemplate.includes('/language-pack/') || entry.pathTemplate.endsWith('/languages'));
+  const languageEntries = entries.filter((entry) => entry.memberType === 'Language pack' || entry.resourceGroup === 'Language packs' || entry.pathTemplate.includes('/language-pack/') || entry.pathTemplate.endsWith('/languages'));
+  const members = entries.filter((entry) => entry.memberType && !languageEntries.includes(entry));
   const general = entries.filter((entry) => !entry.memberType && !subscriptionEntries.includes(entry) && !languageEntries.includes(entry));
   const byType = new Map();
   for (const entry of members) {
@@ -273,16 +325,19 @@ function scopeGroupMarkup(title, entries) {
   </div></details>`;
 }
 
-function commandSlotMarkup(slot) {
+function commandSlotMarkup(slot, slotEndpoints) {
   const commands = Object.entries(slot.model?.commands || {});
   if (commands.length === 0) return '';
   return `<details class="command-slot-group" open><summary><span>Slot ${escapeHtml(slot.slot)}</span><span>${commands.length} command${commands.length === 1 ? '' : 's'}</span></summary><div class="command-list">
     ${commands.map(([oid, descriptor]) => {
-      const commandType = String(descriptor?.type || 'COMMAND').toUpperCase();
-      const needsBody = commandType !== 'EMPTY';
+      const component = componentCheck(slotEndpoints, 'Command', oid);
+      const componentType = component?.ok ? component.componentCommandType : undefined;
+      const commandType = componentType === 1 ? 'EMPTY' : String(componentType ?? descriptor?.type ?? 'COMMAND').toUpperCase();
+      const needsBody = componentType !== 1 && !(typeof componentType === 'string' && componentType.toUpperCase() === 'EMPTY');
       const initialBody = needsBody && descriptor?.value && Object.keys(descriptor.value).length ? JSON.stringify(descriptor.value, null, 2) : '';
       return `<form class="command-form" data-slot="${escapeHtml(slot.slot)}" data-oid="${escapeHtml(oid)}"><div class="command-heading"><div><h3>${escapeHtml(oid)}</h3><span>${escapeHtml(commandType)}</span></div><span class="command-scope">${escapeHtml(descriptor?.access_scope || 'default scope')}</span></div>
-        <label class="field-label" for="command-body-${escapeHtml(slot.slot)}-${escapeHtml(oid).replaceAll('/', '-')}">Command body <span class="label-optional">(optional JSON)</span></label><textarea id="command-body-${escapeHtml(slot.slot)}-${escapeHtml(oid).replaceAll('/', '-')}" class="command-body" spellcheck="false" placeholder="${needsBody ? '{ &quot;int32_value&quot;: 1 }' : 'No body required'}">${escapeHtml(initialBody)}</textarea>
+        ${componentStatusMarkup(component)}
+        ${needsBody ? `<label class="field-label" for="command-body-${escapeHtml(slot.slot)}-${escapeHtml(oid).replaceAll('/', '-')}">Command body <span class="label-optional">(optional JSON)</span></label><textarea id="command-body-${escapeHtml(slot.slot)}-${escapeHtml(oid).replaceAll('/', '-')}" class="command-body" spellcheck="false" placeholder="{ &quot;int32_value&quot;: 1 }">${escapeHtml(initialBody)}</textarea>` : ''}
         <div class="command-actions"><button class="outline-button" type="submit">Run command <span aria-hidden="true">↗</span></button><span class="command-status" role="status" aria-live="polite"></span></div><pre class="command-response" hidden></pre></form>`;
     }).join('')}
   </div></details>`;
@@ -358,6 +413,6 @@ export function renderReport(report, requestedUrl = report.deviceUrl) {
     ...slotGroups.filter((group) => group.entries.length).map((group) => scopeGroupMarkup(group.title, group.entries))
   ].join('') || '<p class="quiet-text">No endpoint checks were returned.</p>';
 
-  const commandGroups = slots.map(commandSlotMarkup).filter(Boolean);
+  const commandGroups = slots.map(slot => commandSlotMarkup(slot, endpointAudit.filter(endpoint => endpoint.slot === slot.slot))).filter(Boolean);
   document.getElementById('commandGroups').innerHTML = commandGroups.length ? commandGroups.join('') : '<p class="quiet-text">No devices on this node advertise commands.</p>';
 }

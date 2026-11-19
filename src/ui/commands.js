@@ -12,7 +12,7 @@ export function bindCommandRunner(getConnection) {
     const connection = getConnection();
     const slot = Number(form.dataset.slot);
     const oid = form.dataset.oid;
-    const bodyText = form.querySelector('textarea').value.trim();
+    const bodyText = form.querySelector('.command-body')?.value.trim() || '';
     const status = form.querySelector('.command-status');
     const output = form.querySelector('.command-response');
     const button = form.querySelector('button[type="submit"]');
